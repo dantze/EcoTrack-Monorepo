@@ -93,6 +93,17 @@ variable "db_version" {
   default     = "POSTGRES_16"
 }
 
+variable "db_edition" {
+  description = "Cloud SQL edition. Shared-core tiers such as db-f1-micro are valid only on ENTERPRISE."
+  type        = string
+  default     = "ENTERPRISE"
+
+  validation {
+    condition     = contains(["ENTERPRISE", "ENTERPRISE_PLUS"], var.db_edition)
+    error_message = "db_edition must be ENTERPRISE or ENTERPRISE_PLUS."
+  }
+}
+
 variable "db_tier" {
   description = "Cloud SQL machine type. db-f1-micro is shared-core and carries no SLA."
   type        = string

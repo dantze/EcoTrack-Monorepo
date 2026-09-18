@@ -55,6 +55,7 @@ module "database" {
   network_id            = module.network.network_id
   engine_version        = var.db_version
   tier                  = var.db_tier
+  edition               = var.db_edition
   availability_type     = var.db_availability_type
   disk_size_gb          = var.db_disk_size_gb
   backup_retention_days = var.db_backup_retention_days

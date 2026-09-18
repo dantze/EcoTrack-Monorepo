@@ -27,11 +27,11 @@ unless its status says otherwise.
 **Status legend:** `[ ]` not started · `[~]` in progress · `[DONE]` done ·
 `[POSTPONED]` deliberately deferred · `[?]` needs a decision first
 
-**Next free ID: TODO-115.** (Highest used is TODO-114.)
+**Next free ID: TODO-116.** (Highest used is TODO-115.)
 
 ---
 
-## Still open — 7 of 113
+## Still open — 8 of 114
 
 The whole of what is left, in one place. Everything not listed here is `[DONE]`.
 
@@ -42,6 +42,7 @@ The whole of what is left, in one place. Everything not listed here is `[DONE]`.
 - **TODO-112** `[ ]` — `spring.jpa.open-in-view` is on by default, and warns about it every boot *(J)*
 - **TODO-113** `[ ]` — CI never runs a migration against Postgres *(G)*
 - **TODO-114** `[ ]` — The web bundle has 2 kB of headroom left *(J)*
+- **TODO-115** `[ ]` — DEPLOYMENT.md and `ci-infra.yml` still describe a Terraform apply in CI *(G)*
 
 **Done, but flagged by whoever did it** — not open, but not finished-and-forgotten
 either:
@@ -170,6 +171,7 @@ full text lives further down.
 | TODO-112 | `[ ]` | J | `spring.jpa.open-in-view` is on by default, and warns about it every boot |
 | TODO-113 | `[ ]` | G | CI never runs a migration against Postgres |
 | TODO-114 | `[ ]` | J | The web bundle has 2 kB of headroom left |
+| TODO-115 | `[ ]` | G | DEPLOYMENT.md and `ci-infra.yml` still describe a Terraform apply in CI |
 
 ---
 
@@ -4055,6 +4057,33 @@ and a profile that points the suite at it, OR Testcontainers. The workflow is
 path-filtered on `backend/**` so the cost lands only on backend PRs. Until then,
 a change to anything under `db/migration/postgresql/` should be run against a
 real Postgres by hand - DEPLOYMENT.md's compose file is enough for it.
+
+---
+
+### TODO-115 `[ ]` DEPLOYMENT.md and `ci-infra.yml` still describe a Terraform apply in CI
+TODO-92 made `terraform apply` a laptop-only operation, and nothing in
+`.github/workflows/` runs `plan` or `apply` any more - `ci-infra.yml` does
+`terraform init -backend=false`, `fmt` and `validate`, with no credentials. Two
+places were not updated to follow:
+
+- **`DEPLOYMENT.md` step 3** ("Move Terraform state to GCS before CI applies
+  anything") says *"The workflow prints a warning on every run until you do."*
+  No workflow initialises a backend, so no such warning exists. The GCS bucket
+  is still worth having - state holds the database password and, with
+  `create_deployer_key = true`, the deployer key, both in plaintext - but the
+  stated reason is wrong and the urgency is overstated.
+- **`ci-infra.yml`'s header** refers twice to `deploy-cloud.yml`, which was
+  deleted with the VPS migration: *"deploy-cloud.yml runs plan and apply"* and
+  *"deploy-cloud.yml can call this as a gate once infra/ is live."*
+
+*Found while walking the one-time GCP setup with the owner, who followed step 3
+and asked where the warning was.*
+
+**What deciding it needs:** nothing - it is two comment blocks and a paragraph.
+The only real question is whether the GCS backend stays a documented step at
+all, now that the laptop is the only thing that applies. It should, on the
+plaintext-secrets argument alone, but written as "your state file is a
+credential" rather than "CI will fail without it".
 
 ---
 

@@ -22,6 +22,10 @@ variable "tier" {
   type = string
 }
 
+variable "edition" {
+  type = string
+}
+
 variable "availability_type" {
   type = string
 }

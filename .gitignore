@@ -132,3 +132,11 @@ infra/**/*.tfplan
 infra/**/tfplan
 infra/**/crash.log
 infra/**/crash.*.log
+
+# ------------------------------------
+# 7. Vercel CLI (web/)
+# ------------------------------------
+# `vercel link` writes projectId and orgId here. CI passes those as
+# VERCEL_PROJECT_ID / VERCEL_ORG_ID instead, so the linked directory is a
+# local convenience and never belongs in the repo.
+.vercel/
