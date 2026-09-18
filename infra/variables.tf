@@ -182,9 +182,9 @@ variable "backend_cpu" {
 }
 
 variable "backend_memory" {
-  description = "Memory per instance, for the service and for each job execution."
+  description = "Memory per instance, for the service and for each job execution. 512Mi kills this container at startup: the JVM takes ~25% of the limit as max heap, and Spring Boot with Hibernate and Flyway does not boot in ~128MB."
   type        = string
-  default     = "512Mi"
+  default     = "1Gi"
 }
 
 variable "backend_min_instances" {
@@ -253,9 +253,9 @@ variable "create_deployer_key" {
 }
 
 variable "vercel_project_name" {
-  description = "Vercel project holding the web SPA. Terraform does not create it; the name is what the CORS origin list and frontend_url are computed from."
+  description = "Vercel project holding the web SPA. Terraform does not create it; the name is what the CORS origin list and frontend_url are computed from. NOT always the project name you chose: *.vercel.app is a global namespace, so a taken name is silently assigned a suffix. Read the real domain off the project and put THAT stem here, or the backend refuses the frontend."
   type        = string
-  default     = "ecotrack-web"
+  default     = "ecotrack-web-one"
 }
 
 variable "web_custom_domains" {

@@ -56,6 +56,14 @@ jobs:
             exit 1
           fi
 
+      # The Vercel project's Root Directory is `web`, and `vercel deploy` checks
+      # that the path exists before it uploads anything - even with --prebuilt,
+      # which reads only .vercel/output. Without a checkout it fails with
+      # "The provided path .../web does not exist". This must stay ABOVE the
+      # artifact download: actions/checkout cleans the workspace.
+      - name: Checkout
+        uses: actions/checkout@v4
+
       # Finds the Build Web run that produced the bundle for this commit. `gh`
       # is preinstalled on the runner and GITHUB_TOKEN can read the repo's own
       # runs, so no extra credential is involved.
