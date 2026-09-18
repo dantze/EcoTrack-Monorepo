@@ -13,5 +13,4 @@ flowchart LR
   SM --> J
   S -- signed URLs --> GCS[(Cloud Storage · task photos)]
   V -. VITE_API_BASE_URL .-> S
-  
 ```
