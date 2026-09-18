@@ -105,19 +105,23 @@ jobs:
       # Written on every build rather than once by hand, so a backend URL that
       # ever does change corrects itself. Remove-then-add because `vercel env
       # add` refuses to overwrite.
+      #
+      # PRODUCTION ONLY, and that is not an omission. The project is deliberately
+      # Git-disconnected, so Vercel never builds a preview deployment and nothing
+      # would ever read a preview value. Worse, `vercel env add … preview` asks
+      # "Git branch?" interactively, which a runner cannot answer - it aborts the
+      # build with "User force closed the prompt".
       - name: Point the Vercel project at this backend
         if: steps.check.outputs.configured == 'true'
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_API_TOKEN }}
           API_BASE_URL: ${{ steps.backend.outputs.api_base_url }}
         run: |
-          for TARGET in production preview; do
-            for PAIR in "VITE_API_BASE_URL=$API_BASE_URL" "VITE_DATA_MODE=live"; do
-              NAME="${PAIR%%=*}"
-              VALUE="${PAIR#*=}"
-              vercel env rm "$NAME" "$TARGET" --yes --token="$VERCEL_TOKEN" >/dev/null 2>&1 || true
-              printf '%s' "$VALUE" | vercel env add "$NAME" "$TARGET" --token="$VERCEL_TOKEN"
-            done
+          for PAIR in "VITE_API_BASE_URL=$API_BASE_URL" "VITE_DATA_MODE=live"; do
+            NAME="${PAIR%%=*}"
+            VALUE="${PAIR#*=}"
+            vercel env rm "$NAME" production --yes --token="$VERCEL_TOKEN" >/dev/null 2>&1 || true
+            printf '%s' "$VALUE" | vercel env add "$NAME" production --token="$VERCEL_TOKEN"
           done
 
       - name: Pull Vercel project settings
