@@ -48,7 +48,7 @@ dependencies {
 	runtimeOnly 'org.flywaydb:flyway-database-postgresql'
 	// Task photos live in a GCS bucket. No key: on Cloud Run the SDK picks up
 	// the runtime service account through ADC (TODO-79).
-	implementation platform('com.google.cloud:libraries-bom:26.88.0')
+	implementation platform('com.google.cloud:libraries-bom:26.91.0')
 	implementation 'com.google.cloud:google-cloud-storage'
 	compileOnly 'org.projectlombok:lombok'
 	runtimeOnly 'com.h2database:h2'
