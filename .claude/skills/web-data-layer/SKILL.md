@@ -115,5 +115,5 @@ works against a live backend, the mock half is unfinished.
   order is finished.** It falls back to date reasoning. The rule for guards,
   archiving and anything that hides a row is `isOrderFulfilled` in
   `features/sales/orderModel.ts` — a COMPLETED task and nothing else, matching
-  the backend's `OrderRepository.findLiveBySubscriptionId`. See CLAUDE.md,
+  the backend's `OrderRepository.findLiveBySubscriptionId`. See `docs/architecture/fulfilment.md`,
   "Two definitions of done".

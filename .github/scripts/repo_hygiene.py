@@ -47,6 +47,9 @@ NO_CI_REQUIRED = {
     ".agents",
     "skills-lock.json",
     "CLAUDE.md",
+    # docs/architecture/*.md is CLAUDE.md's detail, split out so it is read on
+    # demand. Prose, ships in no build; doc_claims.py checks it on every PR.
+    "docs",
     "README.md",
     # The backlog. Prose, and it ships in no build - but "no CI workflow"
     # stopped being true of it: repo-hygiene.yml's "TODO.md index" step runs

@@ -2,6 +2,12 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+**This file is the short version on purpose.** It holds the layout, the
+commands, the working rules and an index. The detail lives in
+`docs/architecture/`, one file per area — **read the matching file before
+changing that area**, the same way you would load a skill. Nothing there is
+optional background; it is where the load-bearing reasons now live.
+
 ## Repository layout
 
 A monorepo with three independently deployed projects. There is no workspace
@@ -13,128 +19,16 @@ tool — each has its own dependencies and is built from its own directory.
 | `web/` | React 19, Vite 6, Tailwind 4, TanStack Query, React Router 7 | `build-web.yml` + `deploy-web.yml` → Vercel |
 | `mobile/` | Expo ~54 / React Native 0.81, expo-router. **Drivers only** (TODO-33) | `deploy-mobile.yml` → EAS Update (OTA) / EAS Build |
 
-**See `DEPLOYMENT.md`** for triggers, required secrets and the runbook. The
-backend and web still deploy together, in one workflow — not because they share
-a domain any more, but because the frontend build has the backend's URL inlined
-into it, so shipping one without the other publishes a bundle pointing at the
-wrong place.
+Also: `infra/` (Terraform for the GCP half, applied from a laptop, never CI),
+`shared/` (JSON fixtures both the backend and web suites read),
+`docker-compose.yml` (Postgres + backend, only for running against real
+Postgres), `DEPLOYMENT.md` (the runbook).
 
 CI is split into `ci-backend.yml` / `ci-web.yml` / `ci-mobile.yml`, each filtered
-on its own `paths:`. Keep that filtering when adding workflows — it is the reason
-three projects can share one repo. `repo-hygiene.yml` has **no** `paths:` filter
-on purpose and runs on every PR; it is the only check that covers files no
-project workflow watches. `audit.yml` is scheduled, not a PR gate. See the
-`verify` skill for which checks a given diff actually needs.
-
-**`infra/` describes the GCP half of the deployment**, in Terraform: Cloud Run
-(one service and two jobs), Cloud SQL, Cloud Storage, Artifact Registry, Secret
-Manager, Cloud Scheduler, a VPC and three least-privilege service accounts. Six
-modules under `infra/modules/` — `network`, `database`, `registry`, `iam`,
-`storage`, `backend` — with
-`infra/main.tf` holding only locals, the API enablement and the module wiring,
-and the root `variables.tf` / `outputs.tf` holding the names the runbook uses. **The `.tf` files carry no comments**; what used to be written in them is in
-this file. **`terraform apply` is run from a laptop, not CI** (TODO-92);
-`ci-infra.yml` is the path-filtered gate
-(`terraform fmt` + `validate`, no credentials needed).
-
-**There is one deployment, named `dev`.** `var.environment` is a token in every
-resource name (`ecotrack-dev-postgres`) and nothing else — there is no staging
-and no second stack. **It is not the Spring profile.** `spring_profiles_active`
-stays `prod` regardless, because that is what selects Postgres; a container
-running the Spring `dev` profile would use the H2 file DB in ephemeral container
-storage, and with `min_instances = 0` every write would vanish the moment the
-instance went away. The deploy workflows derive every resource name from the
-`RESOURCE_PREFIX` repository variable, which must match `local.prefix`.
-
-**Vercel is deliberately NOT in Terraform.** It was, and everything it managed
-was a one-time setting — the project, its build commands, its two `VITE_*`
-variables — bought at the price of a Vercel token in the blast radius of every
-`terraform apply` and dashboard edits being silently reverted. So the project is
-created by hand, and `build-web.yml` writes `VITE_API_BASE_URL` and
-`VITE_DATA_MODE` onto it with `vercel env` before each build. Terraform still
-knows the project's NAME, because the backend's CORS list is computed from it.
-
-It replaced a single DigitalOcean droplet that ran backend + web + Postgres +
-Caddy under one `docker compose` (TODO-71). **What is left of that is
-`docker-compose.yml`, cut down to Postgres + the backend** (TODO-91): the SPA,
-`web/Dockerfile` and the `Caddyfile` are gone, because serving both from one
-origin modelled a shape production no longer has. It is deployed nowhere, and it
-is not the normal way to run the backend either — `./gradlew bootRun` is, on H2.
-Compose is for the one thing bootRun cannot do: run against real Postgres.
-
-Five things hold that description up, all easy to undo by accident:
-
-- **CORS is load-bearing.** Caddy served the SPA and the API from one origin;
-  Vercel and Cloud Run are two. `infra/main.tf` computes
-  `ECOTRACK_CORS_ALLOWED_ORIGINS` from `var.vercel_project_name` plus
-  `var.web_custom_domains`, because Vercel's production alias is
-  deterministically `<project-name>.vercel.app`. Nothing reads it back off
-  Vercel, so **renaming the Vercel project means editing that variable and
-  re-applying** — otherwise the backend refuses the frontend. Local compose is
-  still one origin, so **a CORS failure cannot be reproduced locally** — it is
-  the one class of bug this deployment can produce that the old one could not.
-- **The nightly work runs as Cloud Run Jobs, and the backend scales to zero.**
-  There are no `@Scheduled` methods left. `job/JobRunner.java` is an
-  `ApplicationRunner` under the `job` profile: it reads `ECOTRACK_JOB`
-  (`generate-tasks` → `RecurringTaskScheduler.generateUpcomingTasks`,
-  `prune-sessions` → `TokenService.pruneStaleSessions`), runs exactly that one,
-  and exits — non-zero on an unknown or missing name, or on a throw, because the
-  exit code is the only thing Cloud Run reads. Two Cloud Scheduler jobs start
-  them at 02:00 and 03:30 `Europe/Bucharest` against the jobs' `:run` API, with
-  an **OAuth** token (that API does not take OIDC). The jobs run the same image
-  as the service, so `min_instances` is 0 and there is no `cpu_idle` override
-  (TODO-80), and raising `max_instances` no longer multiplies the nightly work
-  (TODO-81).
-- **The VPC exists because of the JDBC URL.** `application-prod.properties`
-  builds `jdbc:postgresql://HOST:PORT/NAME` from env vars, and the Cloud SQL
-  Auth proxy presents a unix socket the plain Postgres driver cannot dial. So
-  Cloud SQL gets a private IP and Cloud Run reaches it over direct VPC egress —
-  and `roles/cloudsql.client` is deliberately **not** granted to the runtime
-  service account, since that is the proxy's permission. Add it only together
-  with a socket factory on the classpath.
-- **`ignore_changes` on every image field.** CI pushes a commit-tagged image and
-  rolls it out with `gcloud`, on the service and on both jobs; Terraform's copy
-  of `image` is stale by design. Without it the next `apply` would quietly roll
-  production back to the placeholder.
-- **Nothing sensitive is hardcoded, and `ci-infra.yml` checks it recursively.**
-  `gcp_credentials_json`, `vercel_api_token`, `db_password` and `backend_secrets`
-  must stay `sensitive = true` in the root `infra/variables.tf`, which that
-  workflow greps by name.
-
-**Nothing has been applied yet**: there is no GCP project and no Vercel account.
-`DEPLOYMENT.md` has the one-time setup.
-
-**Deploying is a BUTTON, never a merge, and the button never builds**
-(TODO-92, TODO-95). Merging to main runs `build-backend.yml` / `build-web.yml` /
-`build-mobile.yml`: each runs its project's CI, produces the real artifact, and
-parks it somewhere no user can reach — a `sha-…` tag in Artifact Registry, a
-`.vercel/output` bundle uploaded as a GitHub artifact, an EAS update on the
-**staging** branch. The three deploy workflows are `workflow_dispatch`-only and do nothing
-but promote one of those: a Cloud Run revision swap, a `--prebuilt` upload, an
-`eas update:republish`. A deploy is therefore ~1 minute and byte-identical to
-what CI tested.
-
-**Each deploy refuses when the artifact is missing**, which is the safety
-property that matters: you cannot ship a commit that was never built. And a
-missing secret **fails** a deploy while it only **skips** a build — a build is
-automatic and a red main would be wrong, whereas a button that silently does
-nothing is worse than a red run.
-
-`image_tag` on Deploy Backend and `commit` on Deploy Web also make rollback
-ordinary: promote an older artifact. Three consequences worth holding on to:
-
-- **The Vercel project must stay Git-DISCONNECTED.** Connect it and Vercel
-  deploys on its own push webhook, which puts main in production without anyone
-  pressing anything and makes `deploy-web.yml` decoration.
-- **The backend URL is fixed at BUILD time, not at promotion.** Vite inlines
-  `VITE_API_BASE_URL`, so `build-web.yml` reads it from Cloud Run (not from a
-  Terraform output — state is local, a runner has none) and refuses if the
-  service is missing. The same is true of `EXPO_PUBLIC_*` on mobile, which the
-  bundler inlines when `eas update` runs. A promotion cannot change either.
-- **Native mobile builds are the one exception to "buttons never build".**
-  `eas build` compiles native code; nothing can pre-build a store binary. The
-  `build-preview` and `build-production` actions on Deploy Mobile therefore do
-  bundle, and carry the same backend-URL guard `build-mobile.yml` has.
+on its own `paths:` — keep that filtering when adding workflows.
+`repo-hygiene.yml` has **no** filter and runs on every PR. **Deploying is a
+button, never a merge, and the button never builds.** Details:
+`docs/architecture/deployment.md`.
 
 ## Commands
 
@@ -188,668 +82,84 @@ needs network; every build after that finds the files and skips. `typecheck`,
 `mobile` Vitest. `npm run test` is watch mode and never exits; CI (and you) want
 `npm run test:run`.
 
-## Auth: how anyone gets in
 
-**There is no password login and no Google sign-in.** `/api/auth/login` and
-`/api/auth/google` are gone, and `Employee` has no credential to authenticate
-with. **Device enrollment is the only way to obtain a session:**
-`POST /api/enrollment/request` (full name + device id) answers with a 6-digit
-code, an ADMIN approves the request under `/api/admin/enrollment/**`, and
-`POST /api/enrollment/claim` then issues the token pair. The first request
-against an empty database is auto-approved as ADMIN — gated by a one-time setup
-code logged at startup while `ecotrack.enrollment.require-setup-code=true` — so
-whoever opens a fresh server owns it permanently, with no password path back in.
-
-What survives under `/api/auth`: `refresh`, `logout`, `me`, `sessions`,
-`DELETE /sessions/{id}`, `DELETE /sessions`. **All of them are self-scoped**,
-and that is permanent: `AuthController` passes `principal.getEmployee().getId()`
-into `AuthService`, never an id from the client.
-
-**Somebody else's devices live under `/api/admin` instead** (TODO-56).
-`GET /api/admin/employees/{id}/sessions`,
-`DELETE /api/admin/employees/{id}/sessions/{sessionId}` and
-`DELETE /api/admin/employees/{id}/sessions` are how a lost phone is dealt with;
-before they existed an admin's only levers were changing the person's role (for
-its side effect), deleting them, or waiting out
-`ecotrack.security.refresh-token-ttl-days`. Three things about them:
-
-- **No `SecurityConfig` row was needed.** `/api/admin/**` already requires ADMIN
-  and is matched above the office-staff write catch-alls, so a SALES token is
-  refused all three. `AuthorizationMatrixTest` asserts that rather than assuming
-  it — the same property the deleted id-photo endpoint used to cover.
-- **The bulk revoke spares the CALLER's current session**, which only ever
-  matters when an admin runs it on themselves: signing yourself out mid-task is
-  never what the button meant, and for the last admin it walks into TODO-30's
-  lockout. Not a refusal — TODO-22 settled that an admin who may not log out is
-  worse than the lockout — and the per-session delete still ends it deliberately.
-- **The employee id in the URL is the scoping check**, not decoration:
-  `TokenService.revokeSession(employeeId, sessionId, reason)` looks the session
-  up by both, so an id belonging to somebody else is a 404. `revoked_reason`
-  records `REVOKED_BY_ADMIN` rather than `REVOKED_BY_USER`, because the session
-  row outlives the session and that is the only record of why a device died.
-
-An admin sees the same fields the owner sees — device label, created, last used.
-There is no IP either way; the app has never stored one. `AdminSessionRevocationTest`
-covers all of it against the real filter chain.
-
-**Losing every admin session is recoverable (TODO-30).** The last admin pressing
-Deconectare used to be permanent: nobody could approve a request, and the
-first-user-becomes-ADMIN path only reopens on an *empty employees table*, which
-a logout does not produce. `EnrollmentService.isAdminLockedOut()` now detects
-"zero usable ADMIN sessions" — measured on the **refresh** token, since an
-expired access token is not a lockout — and logs a single-use recovery code, in
-the same place and shape as the first-run code. Presenting it on
-`/api/enrollment/request` mints a new ADMIN, which the device then claims
-normally. The state is recomputed lazily on `GET /api/enrollment/status` and on
-`/request`, because nothing else observes the transition: a logout is an
-`/api/auth` call that knows nothing about enrollment.
-
-Two rules hold it up. **The recovery code is required even when
-`ecotrack.enrollment.require-setup-code=false`** — that flag exempts the
-first-run land-grab, which needs an attacker to beat the owner to a brand-new
-server, whereas a lockout is one button on one phone away. And **a request
-carrying no code at all during a lockout stays an ordinary PENDING request**,
-not a 403, so a driver who happens to ask in that window is not handed an error
-they cannot act on. `ecotrack.enrollment.allow-admin-recovery=false` turns the
-whole thing off. `SecurityTests/AdminLockoutRecoveryTest` covers it against the
-real filter chain, reading the code out of the log — the only channel it has.
-
-**Tokens are opaque, not JWTs.** `TokenService` mints 32 bytes from
-`SecureRandom` and persists only the SHA-256 hash, in `Session`. 30-minute
-access token, 365-day refresh token that **rotates on every use**, revocable per
-device. Above `max-sessions-per-user` an employee's least-recently-used sessions
-are revoked when a new one is issued, and unusable sessions are pruned nightly.
-Every lifetime, the session cap and the enrollment rate limit are
-`ecotrack.security.*` / `ecotrack.enrollment.*` properties in
-`application.properties` — read them there rather than hardcoding a number.
-
-**The phone is a driver device, not a second full app** (TODO-33). `mobile/`
-has the driver experience and nothing else: my routes, my tasks, status
-changes, photo upload. Sales and Technical were deleted from it — every
-order-type change used to be written twice, and the web implementation is the
-more complete of the two. Office staff use the responsive web app on the same
-phone. An employee holding only SALES or TECH lands on `mobile/app/office.tsx`,
-a signpost to the web app that **keeps the session**: `destinationForRoles`
-reports `kind: 'office'` rather than `kind: 'none'`, because 'none' drops the
-session and would loop a salesperson through an admin-approved enrollment on
-every launch to be told the same thing.
-
-**That signpost's address is configured, never derived** (TODO-84).
-`EXPO_PUBLIC_WEB_APP_URL` — Terraform's `frontend_url` — reaches it through
-`mobile/constants/WebAppConfig.ts`. It used to be `API_BASE_URL` with the `/api`
-suffix stripped, which was right while Caddy served both from one origin and
-names the Cloud Run **backend** now that the SPA is on Vercel. There is no
-fallback: unset, the screen says it does not know the address, because the only
-value that could be computed is the wrong one. A test asserts `office.tsx` never
-mentions `API_BASE_URL` again.
-
-**Both projects can get a session** (TODO-19). `web/` has
-`features/auth/EnrollmentPage.tsx`; `mobile/` has `app/enrollment.tsx` plus
-`services/EnrollmentService.ts`, and its password login is deleted. Token
-plumbing is shared in spirit across both: `services/tokenStore.ts` holds the
-pair and `services/http.ts` attaches `Authorization` and does a single-flight
-refresh-and-retry on one 401.
-
-**Mobile re-reads its own roles now** (TODO-35). `user.roles` is a cached copy in
-device storage that decides which menus are drawn — it used to be written once,
-at claim time, and never again, so an admin promoting or demoting someone left
-the phone rendering buttons the backend would refuse.
-`AuthService.syncCurrentUser()` re-reads the employee from `GET /api/auth/me` and
-rewrites that copy; the boot gate (`app/index.tsx`) routes on the fresh answer,
-and `setOnSessionRenewed` in `services/http.ts` runs it again after every silent
-refresh, sending the device back through the gate only when the role SET actually
-changed. A failed call keeps the cached copy: the refresh token is what proves
-there is a session, and no-signal must not read as signed-out.
-
-That is also why `apiFetch` no longer treats **all** of `/auth/**` as
-non-retryable — only `/auth/refresh` and `/auth/logout`, which authenticate with
-the refresh token. `GET /auth/me` is an ordinary bearer read, and at launch the
-stored access token is nearly always past its 30-minute life, so the blanket rule
-made the sync 401 and give up on every boot.
-
-**One rule the enrollment screens depend on:**
-`BearerTokenAuthenticationFilter` rejects any request carrying a token it cannot
-validate, and it runs BEFORE authorization — so it fires on the `permitAll`
-enrollment endpoints too. A device whose session was revoked still holds that
-dead token, which would make the one screen able to recover the device the one
-screen it cannot reach. Mobile's `apiFetch` therefore takes
-`{ anonymous: true }`, and all three enrollment calls use it; a test asserts it.
-**A new unauthenticated endpoint needs the same treatment.**
-
-## The security enforcement flag
-
-`ecotrack.security.enforce` gates whether `/api/**` rejects unauthenticated
-requests. It does **not** gate the auth machinery — enrollment, refresh, logout
-and bearer validation always work, and `BearerTokenAuthenticationFilter` always
-populates the SecurityContext for callers that do send a valid token.
-
-| Where | Value | Why |
-|---|---|---|
-| `application.properties` (base, inherited by prod) | `${ECOTRACK_SECURITY_ENFORCE:true}` | **on by default.** No token-less client is left to protect: the only way to a session is enrollment, and enrollment issues tokens |
-| `application-dev.properties`, `application-test.properties` | `true` | local runs and `@SpringBootTest` exercise the real behaviour |
-| `SecurityConfig`'s `@Value` fallback | `false` | applies only if the property is absent entirely — never in a normal boot |
-
-Setting `ECOTRACK_SECURITY_ENFORCE=false` in the environment is a deliberate
-escape hatch that opens `/api/**` to anonymous callers. It is not a default and
-should not be committed anywhere.
-
-Two companion knobs sit next to it, both **independent of `enforce`**:
-
-- `ecotrack.security.reject-invalid-bearer` (default `true`) — a request whose
-  Bearer token is unknown, expired or revoked gets a 401 even while `enforce` is
-  `false`. Requests with **no** `Authorization` header are untouched, which is
-  what keeps the public enrollment endpoints reachable. Without it, a revoked
-  token would keep working through an open gate and logout would be invisible to
-  the client.
-- The **role matrix** in `SecurityConfig`, written inside the `enforceSecurity`
-  branch and therefore completely inert while `enforce=false`. **First match
-  wins, so position is the whole game.** In order: infrastructure paths
-  (`denyAll`) and the health probe; the only unauthenticated surface —
-  `GET /api/enrollment/status`, `POST /api/enrollment/request` and `/claim`,
-  `POST /api/auth/refresh` and `/logout` — then the rest of `/api/auth/**`
-  authenticated; `/api/admin/**` and employee writes need `ADMIN`;
-  `PATCH /api/tasks/*/status` and `POST /api/tasks/*/photos` accept
-  `DRIVER`/`SALES`/`TECH`/`ADMIN` (those two are the only writes the driver app
-  makes — **a new mobile write needs a new row, above the catch-alls**. Since
-  TODO-33 that is checked, not merely stated: mobile's ENTIRE API surface is
-  declared in `.github/scripts/cross_project_invariants.py` and a new call
-  fails repo-hygiene until it is added there); other
-  `/api/**` writes need `SALES`/`TECH`/`ADMIN`; `/api/**` reads need any
-  authenticated employee; everything else is `denyAll()`.
-  Authentication alone is not authorization: before this matrix existed, any
-  valid token was effectively an admin token.
-
-`SecurityTests/` covers both modes: `AuthEnforcementOnTest`,
-`AuthEnforcementOffTest`, `AuthorizationMatrixTest`, `TaskScopingTest`,
-`EnrollmentFlowTest`, `EnrollmentBootstrapCodeTest`. The `auth-security` skill
-walks the whole surface; `api-endpoint` covers adding a route to it.
-
-### Row-level task access is a separate layer
-
-The role matrix answers "which VERBS may this role use". It does not answer
-"which ROWS" — and those are different questions. `TaskAccessPolicy`
-(`service/TaskAccessPolicy.java`) is the second layer, consulted by
-`TaskController`:
-
-- A **driver-only** employee (holds `DRIVER` and no office role) may read and
-  write exactly the tasks on routes assigned to them. Assignment runs
-  `Task -> Route -> Employee`; a route has one assignee.
-- **Office staff** (`ADMIN`/`SALES`/`TECH`) are unrestricted — the overview is
-  unchanged. Someone holding `DRIVER` *and* an office role counts as office.
-- `GET /api/tasks/mine` and `/api/tasks/mine/date/{date}` take the employee from
-  the access token. **The driver app must use these** — passing an id from the
-  client is what allowed one driver to read another's day.
-- `/api/tasks/employee/{id}` still exists for the office overview, and returns
-  403 when a driver asks for an id that is not their own. Mobile still calls it
-  from one place after TODO-33 — an ADMIN using `Driver/DriverSelection` to look
-  at a chosen driver's day — which the policy allows because office staff are
-  unrestricted.
-- `GET /api/tasks/order/{id}/exists` is **office-only** (TODO-42). It summarises
-  one order's task — id, route, schedule, status — and the order id is the only
-  thing needed to aim at it, so an unguarded read let a driver walk the id space.
-  It is `requireOfficeRole` rather than a row-scoped rule because no driver screen
-  asks the question: every caller is an office screen in `web/src/features/sales`
-  or `web/src/features/technical`. Mobile had callers too until TODO-33 deleted
-  those sections, and now cannot reach it at all.
-- `GET /api/tasks/order-status?ids=…` is the **batch** form of that read
-  (TODO-43), and carries the **same** `requireOfficeRole` for the same reason
-  (TODO-52) — unguarded it would be strictly worse, since one request would
-  enumerate the order space rather than probe a single id. The id list is capped
-  at 500 and refused with a 400 beyond it, never truncated: a short map reads as
-  "these orders have no task", which is what decides Curente vs Arhivă. The web
-  client chunks at 200.
-
-`SecurityTests/TaskScopingTest` covers this against the real filter chain.
-**A new task endpoint needs a policy call, not just a matcher row.**
-
-### Controller slices prove nothing about auth
-
-`@WebMvcTest` does not pick up the app's own `SecurityConfig`, and the slices in
-`ControllerTests/` run `@AutoConfigureMockMvc(addFilters = false)` with
-`TaskAccessPolicy` as a `@MockitoBean` whose void guards no-op. A green
-controller slice says the wiring works and nothing at all about who may call it.
-Security assertions belong in the `@SpringBootTest` classes under
-`SecurityTests/`, which run the real chain.
-
-## The schema is Flyway's, and it is one set of migrations for two databases
-
-`spring.jpa.hibernate.ddl-auto=validate` everywhere (TODO-101). Hibernate no
-longer builds anything — it only checks that what Flyway produced still matches
-the entities, and **fails the boot** if not. That is the whole safety property:
-drift is found at startup, not at the first query that hits a missing column.
-
-**`db/migration/common/` is the normal home, and V1 is generated output.** It is
-Hibernate's own schema export taken in the **Postgres** dialect, then used
-unchanged on H2. One file serves both because the only thing the two dialects
-disagreed about is how an enum column is spelled — H2 has a native `enum (...)`,
-Postgres writes `varchar ... check (... in ...)` — and the Postgres spelling is
-valid H2 while the reverse is not. **Never edit a migration that has run**;
-Flyway records its checksum and will refuse the database that has the old copy.
-
-**`db/migration/{h2,postgresql}/` is the exception, and it costs a rule.** V3
-had to be split because retyping `varchar` → `date` genuinely cannot be written
-once: Postgres has no assignment cast and demands `USING`, H2 has no `USING`.
-Two files, same version, one per database. Three things follow:
-
-- **The shared folder is `common/`, not `db/migration` itself.** Flyway scans a
-  location RECURSIVELY, so listing the parent found both vendor copies through
-  it and refused to start with "Found more than one migration with version 3".
-- **`repo_hygiene.py`'s `check_vendor_migrations` fails a PR** that adds a
-  version to one vendor folder and not the other. It cannot check that the two
-  are equivalent — nothing could — but the omission is the mistake that actually
-  gets made, and it is invisible otherwise.
-- **The suite runs the H2 half only** (TODO-113). `postgresql/` migrations are
-  verified by hand against a real Postgres before they land. That is the one
-  place this arrangement is weaker than it looks.
-
-`baseline-on-migrate` is on for databases that predate Flyway: an existing
-developer H2 file is stamped as already at V1 rather than refused.
-
-**The test suite builds its schema with Flyway too**, not `create-drop`. That is
-deliberate and it is what makes the migrations covered at all: every
-`@SpringBootTest` executes them and then `validate` holds them to the entities,
-so a migration that forgets a column fails in CI rather than in production.
-
-## Who changed this row, and what happens when two people change it at once
-
-`domain/Auditable.java` is a `@MappedSuperclass` carried by the seven entities
-an operator edits — `Order`, `Task`, `Client`, `Route`, `Product`,
-`Subscription`, `RecurringIgienizare`. It holds both halves.
-
-**The audit half (TODO-102).** `createdAt` / `updatedAt` / `createdBy` /
-`updatedBy`, filled by Spring Data auditing from the SecurityContext that
-`BearerTokenAuthenticationFilter` already populates. Two rules:
-
-- **The author is an employee ID, never a name.** A name is a copy that goes
-  stale; the employee row outlives the edit.
-- **A write with nobody authenticated stays NULL.** The nightly Cloud Run Jobs
-  are genuinely authorless, and inventing a placeholder id would put a lie in
-  the one column that exists to say who did it.
-
-**The locking half (TODO-103).** `@Version`, so a concurrent edit is refused
-rather than silently applied. This matters more here than usual because Spring
-Data `save()` issues a **full-row** UPDATE: two dispatchers with the same task
-open were not racing on one field — the second to press Salvează wrote back every
-stale field it was holding. `ObjectOptimisticLockingFailureException` becomes a
-**409** with a Romanian message, which `serverMessage()` shows because 409 is on
-its allowlist, and `api/queryClient.ts` invalidates the cache on any 409
-(TODO-109) so the pane underneath stops showing the row that lost.
-
-**`Employee` and `Session` are deliberately unversioned.** Employee is edited
-only through `AdminService`, whose last-admin guard is the stronger check;
-Session is written on every token refresh, where a version would turn two
-devices refreshing at once into a 409 on a path that must keep working.
-
-## Logs are JSON, and the format is ours for a reason
-
-`config/GoogleCloudLogFormat` (prod profile only) writes one JSON object per
-line; `config/RequestIdFilter` gives every request an id, publishes it in the
-MDC and echoes it as `X-Request-Id` (TODO-104).
-
-**None of Spring Boot's three built-in formats would do.** Cloud Logging reads a
-**top-level** `severity`; ECS nests it as `log.level`, and
-`logging.structured.json.rename` renames a member where it sits rather than
-hoisting it — so every line files as INFO and severity-based alerting never
-fires, which is a failure that looks exactly like nothing going wrong.
-
-Two more faults that only a real boot exposed, both pinned by
-`LoggingTests/GoogleCloudLogFormatTest`: `logging.structured.json.add.service.name`
-collides with the `service` object ECS already writes and makes logback fail
-EVERY append (a container with no logs at all), and **a formatter must emit its
-own trailing newline** or all forty startup entries concatenate onto one line. A
-stack trace goes INSIDE `message` for the same reason — raw multi-line output is
-N separate entries, N-1 at the wrong severity.
-
-## Backend architecture
-
-Standard controller → service → repository layering under
-`com.example.damiProd`. The parts that need multiple files to understand:
-
-**Domain inheritance.** `Order` and `Client` both use JPA
-`InheritanceType.JOINED`. `Order` → `AmplasareOrder` / `RidicareOrder` /
-`IgienizareOrder`, dispatched by Jackson `@JsonSubTypes` on an `orderType`
-discriminator. `Client` → `Individual` / `Company`. Adding an order type spans
-all three projects at once — use the `order-type` skill.
-`OrderService.createOrder`/`updateOrder` are `@Transactional`, because task
-generation and inventory adjustment happen inside them.
-
-**`Task` has three independent parents** — `route_id`, `order_id`, and
-`recurring_plan_id`, each nullable and meaning something different. Tasks are
-generated from orders and from `RecurringIgienizare` plans; `RecurringTaskScheduler`
-tops up indefinite plans nightly at 02:00, as the `generate-tasks` Cloud Run Job
-rather than on a timer inside the service.
-
-**Retiring a subscription is serialised with a row lock.**
-`SubscriptionRepository.findByIdForUpdate` is a `SELECT … FOR UPDATE` on the one
-subscription row, and it is taken by `SubscriptionService.deactivate` *and* by
-every path that attaches work to a plan — `OrderService.createOrder`/`updateOrder`
-and `RecurringIgienizareService.create` (TODO-39). Retiring is a check-then-act
-("nothing live points at this plan" → `isActive = false`) and order creation is
-the write that invalidates it, while touching none of the same rows: with no
-`@Version` there was nothing to conflict on. **The lock only decides who goes
-second — each side must then re-read**: `deactivate` re-checks its blockers, and
-the creating side re-checks `isActive` and refuses a retired plan with a 409.
-Dropping either half reopens one of the two interleavings.
-
-**CORS lives in `SecurityConfig`, not `WebConfig`.** `WebConfig` is a
-deliberately empty marker documenting why — Spring Security must own CORS once
-it is on the classpath, and a second registration would double-add headers.
-
-**Profiles.** Base and `dev` both use the H2 file DB at `backend/data/damiprod`;
-`dev` overrides nothing that matters any more. `prod` switches to Postgres,
-building its JDBC URL from `DB_HOST`/`DB_PORT`/`DB_NAME` env vars. `test` =
-in-memory H2, `create-drop`. `job` is additive — the nightly Cloud Run Jobs run
-`prod,job`, and all it does is set
-`spring.main.web-application-type=none` so the one-shot process starts no server.
-`DataLoader` seeds the role rows and the product catalogue, and only when those
-tables are empty. It no longer seeds employees — the first enrolled device
-becomes the first ADMIN instead.
-
-**`DataLoader` is OFF under `test`** (TODO-74), via
-`ecotrack.bootstrap.seed-reference-data=false` in `application-test.properties`.
-It used to run there and this file twice got that wrong in both directions:
-`spring.sql.init.mode=never` governs `schema.sql` / `data.sql`, not a
-`CommandLineRunner`, and `SpringBootContextLoader` runs the runners — so every
-`@SpringBootTest` context really did start with 4 roles and 11 products in it.
-Nothing was leaning on them: **a test that needs a role find-or-creates it**,
-which is what `EnrollmentService.resolveRole` does in production too, and no
-`@SpringBootTest` touches the catalogue. So a `@SpringBootTest` database now
-starts empty, exactly like a `@DataJpaTest` one, and a row count means the same
-thing in both. `SuiteTests/DatabaseIsolationTest` asserts it;
-`BootstrapTests/DataLoaderTest` still covers the seeding itself by calling
-`run()` directly, and is unaffected by the property.
-
-**Every `@SpringBootTest` gets its own database** (TODO-31). The suite used to
-share one JVM-wide `jdbc:h2:mem:testdb`, and the classes that exercise the
-first-user bootstrap cannot be `@Transactional` — they need committed state — so
-each left an ADMIN behind for whoever ran next. `@AutoConfigureTestDatabase` on
-every `@SpringBootTest` gives one uniquely-named database per Spring **context**;
-contexts are still cached, so classes with matching configuration still share a
-context, and now share only with each other. `SuiteTests/DatabaseIsolationTest.java`
-carries the rule and fails if a new `@SpringBootTest` omits the annotation.
-
-## Two definitions of "done", on purpose
-
-An order's "is the work finished?" question has **two** answers in this repo and
-they deliberately disagree. Picking the wrong one is a silent bug, so pick
-consciously.
-
-**The strict rule — `isOrderFulfilled` in `web/src/features/sales/orderModel.ts`:
-an order is finished iff it has a COMPLETED task, and nothing else.** An order
-with no task has certainly not been carried out, so it stays current even when
-its date is long past. A status that is missing or still loading also reads as
-unfinished — an order only leaves the operator's list on positive evidence.
-
-The backend enforces the **same** rule in
-`OrderRepository.findLiveBySubscriptionId`, whose JPQL is a
-`NOT EXISTS (… task.status = 'COMPLETED')`: that is what refuses to retire a
-subscription while live orders still point at it. Two implementations, one rule
-— **change one and you must change the other**, or the archive and the guard
-will disagree about the same order.
-
-`countLiveByProductId` in the same repository is the third, and it is the same
-`NOT EXISTS` for the same reason: **retiring a product is now a soft delete too**
-(TODO-38), so a finished order keeps resolving its name and price through the
-surviving row and no longer blocks. Produse and Abonamente are one rule now,
-where they used to be two — the product delete was hard, which forced it to block
-on *any* reference and meant a product sold once could never leave the catalogue.
-`SubscriptionService.moveOrders` (TODO-37) is the fourth caller of the same
-definition. All four move together.
-
-`findLiveByProductId` is `countLiveByProductId` with the rows kept instead of
-counted (TODO-57) — the count refuses the delete, the list is what
-`GET /api/products/{id}/usage` names in the dialog explaining it. **One
-predicate, written twice**, so a refusal that counted three orders cannot open a
-dialog showing two; `FulfilmentRuleTest` runs both against every case in the
-shared fixture. `GET /api/subscriptions/{id}/usage` is the same arrangement on
-the subscription side.
-
-Both are roll-ups over **all** of an order's tasks, because an order is not
-limited to one: `TaskService.summariseOrderTasks` is what
-`GET /api/tasks/order/{id}/exists` reports, and it answers COMPLETED whenever any
-task is (TODO-34). **`shared/fulfilment-cases.json` is what holds the three sides
-to the same answers** — the backend suite and the web suite both read that one
-file, so a case added there fails whichever side does not follow it. Change the
-rule by changing the fixture first.
-
-This strict rule drives the **Curente / Arhivă** split on Comenzi. Nothing
-archives or un-archives by hand: the state is derived, so an order leaves Arhivă
-exactly when its task stops being COMPLETED.
-
-**The lenient rule — `deriveLifecycle` in `web/src/features/map/data.ts`:** task
-evidence first, then a **fallback to date reasoning** when an order has no
-conclusive task, which will call a task-less past-dated order `'done'`. That is
-fine for colouring a map pin and wrong for a guard or an archive, which have to
-fail safe. Do not "unify" the two, and do not reach for `deriveLifecycle` when
-the answer gates a write or hides a row.
-
-A third, unrelated definition: the Comenzi table, the calendar and the day
-drawer all place an order on **`orderPrimaryDate`** (start / pickup / sanitation
-date) — one shared definition of *when*, so the table and the calendar can never
-disagree about which day an order belongs to.
-
-## Web architecture
-
-**The UI runs two component libraries, on purpose.** shadcn/ui owns the chrome
-(buttons, dialogs, menus, tables, tabs, command palette, toasts) and Mantine
-owns the inputs and interaction logic shadcn does not do well (the date field,
-combobox internals, charts, and `@mantine/hooks`). They read the SAME tokens, so
-they look like one product. The split is decided, not negotiated per screen —
-the `web-ui-shadcn` and `web-ui-mantine` skills carry the rules, and the
-packaged upstream skills (`shadcn`, `mantine-combobox`, `mantine-form`,
-`mantine-custom-components`) are installed under `.agents/skills`, symlinked
-into `.claude/skills`.
-
-Three layers, and feature code only ever sees the third:
-
-| Path | What |
+## How to work here
+
+These apply to every change, before any area-specific rule.
+
+**Plan before code.** Anything beyond a one-file fix goes through the
+`plan-first` skill: state the goal, list the invariants the change touches,
+write the failing test, then implement, then `verify`. The invariant list in
+that skill is the "change one, change the other" pairs of this repo — the
+mistakes that pass CI on one side and break the other.
+
+**Write less.**
+
+- The smallest diff that does the job. No drive-by refactors, renames or
+  reformatting of lines you did not need to touch.
+- No speculative abstraction — no helper, option or layer for a second caller
+  that does not exist yet.
+- Reuse what is there (the kit in `web/src/components/ui`, `serverMessage()`,
+  `TaskAccessPolicy`, the existing skills) before adding a parallel one.
+- Delete dead code you made dead; do not leave it "just in case".
+- Do not touch frozen contracts (`web/src/components/ui/types.ts`,
+  `web/src/api/contract.ts`) unless that is the task.
+
+**Be honest about state.**
+
+- Never weaken a test, a guard or a CI check to get green — fix the
+  disagreement. Never edit a migration that has run.
+- Report what was run and what was not. A skipped check is skipped, not passed.
+- When the code and these docs disagree, say so and fix the doc in the same
+  change — `doc_claims.py` checks the paths and pinned values.
+
+## Rules that are easy to break
+
+One line each; the linked file has the reason, and the reason is the part that
+stops you "fixing" it.
+
+- **No password login.** Device enrollment is the only way to a session; tokens
+  are opaque, hashed, rotating. → `docs/architecture/auth-security.md`
+- **The role matrix in `SecurityConfig` is first-match-wins**, and a new mobile
+  write needs a row above the catch-alls *and* an entry in
+  `.github/scripts/cross_project_invariants.py`. → `api-endpoint` skill
+- **A new task endpoint needs a `TaskAccessPolicy` call**, not just a matcher.
+- **Controller slices prove nothing about auth** — security tests go in
+  `SecurityTests/` against the real chain.
+- **A new unauthenticated endpoint needs `{ anonymous: true }` on mobile.**
+- **Flyway owns the schema**; `ddl-auto=validate`. A vendor migration needs both
+  `h2/` and `postgresql/` copies. → `docs/architecture/backend.md`
+- **"Done" has two definitions on purpose** — strict for guards and the archive,
+  lenient only for map colours. Change the fixture first. →
+  `docs/architecture/fulfilment.md`
+- **Feature code imports only `{ api } from '@/api'`**; live and mock stay
+  substitutable. → `web-data-layer` skill
+- **Task status is read-only in the web app.** Only drivers set it, from mobile.
+- **Third-party hosts never see our bearer token, and our ID scanner never sees
+  a third-party host.** No ID image is uploaded or stored. →
+  `docs/architecture/id-scan-and-photos.md`
+- **CORS is load-bearing and cannot be reproduced locally**; Vercel stays
+  Git-disconnected. → `docs/architecture/deployment.md`
+- **Before assuming something is safe, read** `docs/architecture/known-gaps.md`.
+
+## Deeper reading
+
+Section headings moved verbatim, so a code comment citing a CLAUDE.md section
+is found through this table.
+
+| Section | File |
 |---|---|
-| `src/components/shadcn/*` | raw primitives, written by the CLI. Not edited by hand |
-| `src/components/ui/*` | **the kit** — EcoTrack's own components, contract frozen in `types.ts` |
-| `src/components/layout/*` | the Outlook shell: `AppShell`, `TopBar`, nav pane, `Workbench`, `CommandBar`, `ListDetail` |
+| Repository layout (infra, Vercel, Cloud Run Jobs, VPC, deploy buttons) | `docs/architecture/deployment.md` |
+| Auth: how anyone gets in · The security enforcement flag · Row-level task access · Controller slices prove nothing about auth | `docs/architecture/auth-security.md` |
+| The schema is Flyway's · Who changed this row (auditing, `@Version`) · Logs are JSON · Backend architecture | `docs/architecture/backend.md` |
+| Two definitions of "done", on purpose | `docs/architecture/fulfilment.md` |
+| Web architecture (two UI libraries, tokens, data layer, local-state rules) | `docs/architecture/web.md` |
+| Scanning an ID — and why no photo is stored · task photos | `docs/architecture/id-scan-and-photos.md` |
+| Known gaps | `docs/architecture/known-gaps.md` |
 
-**One token system, in `src/index.css`, and dark mode is real.** Every Tailwind
-colour token is an indirection (`@theme inline`) onto a runtime CSS variable
-that changes under `.dark`, so no component writes a `dark:` colour override.
-`src/theme/ThemeProvider.tsx` owns light/dark/system and writes BOTH the `.dark`
-class (Tailwind/shadcn) and `data-mantine-color-scheme` (Mantine); an inline
-script in `index.html` stamps them before first paint. Mantine's stylesheets are
-imported into `@layer mantine`, declared below Tailwind's layers — that is what
-lets a utility class beat a Mantine style without `!important`.
-
-**The screen shape is Outlook's**: a `CommandBar` ribbon over a list, and the
-selected record in a `ListDetail` reading pane — resizable on `lg+`, a Sheet
-below it. Clicking a row never costs the operator their place in the list.
-
-**The data layer has two interchangeable implementations behind one contract.**
-`src/api/contract.ts` defines `EcoTrackApi`; both `src/api/live/` (real fetch)
-and `src/mocks/` (seeded in-memory store) satisfy it exactly. `src/api/index.ts`
-picks one from `VITE_DATA_MODE` at build time.
-
-Feature code must import only `{ api } from '@/api'` — never from `@/api/live`
-or `@/mocks` directly. That rule is the only thing keeping the two implementations
-substitutable. The `web-data-layer` skill has the full procedure.
-
-Mock is the default for local development, where it needs no backend at all.
-**Production builds live mode**, on Vercel: `build-web.yml` writes
-`VITE_DATA_MODE=live` and an ABSOLUTE `VITE_API_BASE_URL` — the Cloud Run URL
-plus `/api` — onto the Vercel project with `vercel env`, on every deploy, and
-Vite inlines both at build time. The absolute URL is why the frontend must be
-rebuilt whenever the backend URL changes, and why `build-web.yml` reads that URL
-from Cloud Run at build time rather than trusting a stored copy.
-
-`web/Dockerfile` is gone (TODO-91) — nothing built the SPA into an image once
-Caddy went, and while it existed it was a second place a `VITE_*` default could
-drift from the deployed one. `config.ts`'s `/api` fallback is now purely a
-diagnostic for a build that forgot the variable; no build produces it on
-purpose.
-
-**`src/api/live/normalize.ts` absorbs the wire/domain mismatch.** The Spring
-entities do not serialise cleanly into `@/types/domain`: associations are
-`@JsonIgnore`d and replaced by transient id/name getters, and `/api/employees`
-returns the JPA entity (roles as objects) while `/api/admin/employees` returns a
-DTO (roles as strings). **If you change an entity's JSON shape in the backend,
-`normalize.ts` is where the web app breaks.**
-
-**`src/auth/tokenBridge.ts` is an acyclic seam,** not incidental indirection.
-`http.ts` needs the current access token and a refresh-on-401 hook, but cannot
-import `src/auth` because `AuthProvider` imports `@/api`. `AuthProvider`
-registers its token and refresher into the bridge on mount. The access token is
-held in memory only; only the refresh token (and the generated device id)
-survive a reload, in versioned `localStorage` keys.
-
-A 401 from anything other than `/auth/**` triggers exactly one silent
-refresh-and-retry.
-
-**The server's refusal text is shown to the operator, but only for 400/404/409**
-(TODO-51). `serverMessage()` in `src/api/http.ts` is the one place that decides:
-it prefers `.message` out of the four-key envelope `GlobalExceptionHandler`
-builds, falls back to the raw body, and returns `null` for anything it cannot
-vouch for. The allowlist is the point — those three statuses are the ones whose
-message comes from a domain exception and is therefore Romanian and written to
-be read, while **401/403 are generic on purpose** (echoing them would tell an
-unauthorized caller which rule stopped them) and 413/5xx are English
-boilerplate. Both `errorMessage` helpers — `features/technical/utils.ts` and
-`features/sales/components/Toaster.tsx` — ask it first and phrase the fallback
-themselves; a third copy of the rule on a screen is what this replaced.
-`mobile/services/http.ts` carries a deliberate copy (`messageFromBody` /
-`apiError`) because the projects cannot import each other, and says so.
-`EnrollmentService` is the documented exception on both sides: the enrollment
-endpoints write their own Romanian bodies for 403/410/429, outside the
-allowlist.
-
-**Third-party map calls bypass `@/api` on purpose.** Map tiles come from
-OpenFreeMap (`MAP_STYLE_URL` in `features/map/components/mapStyle.ts`) and
-address search/reverse geocoding from Photon (`src/lib/geocoding.ts`); neither
-is keyed, and neither goes through `http.ts`, because that would attach our
-bearer token to someone else's host. Mobile's Google Places call was the other
-instance of the same rule and went with the Sales section (TODO-33) — the rule
-outlives it, because the next third-party call will land here. MapLibre is
-~250 kB gzipped, so
-everything that imports it must stay behind a dynamic import — `/harta` via the
-route table, the order location picker via `React.lazy` in
-`sales/components/fields.tsx`.
-
-**A MapLibre container must be positioned with INLINE styles.** MapLibre stamps
-`.maplibregl-map` onto the element it is given, and `maplibre-gl.css` sets
-`position: relative` on that class — loaded after Tailwind's utilities, so it
-beats `absolute inset-0`, the container collapses to height 0, and the map
-renders a blank white box while still reporting correct coordinates. Both
-`MapCanvas` and `LocationPickerModal` use `style={{ position: 'absolute',
-inset: 0 }}` for exactly this reason; the picker shipped without it once (TODO-10).
-
-**Server state is TanStack Query.** Query keys and the mutations that invalidate
-them live together in each feature's `queries.ts`, namespaced by module
-(`'admin'`, `'auth'`, `'sales'`, `'technical'`) so invalidating a parent key
-cascades. Screens supply only toasts.
-
-**Local state has three house rules, all from TODO-26.** They exist because the
-same three mistakes were made on nearly every screen:
-
-- **A highlighted index is clamped on READ**, never corrected in an effect — the
-  list shrinks during render, and an effect fixes it one render too late, in
-  which Enter commits nothing.
-- **A dialog resets by not being mounted.** `Modal` renders `null` when closed,
-  so a dialog with local state is a wrapper that returns `null` plus a body that
-  only mounts while open — not a `useEffect` clearing fields on `open`.
-- **A deep link is consumed by `useDeepLinkOnce` / `useDeepLinkFlagOnce`**
-  (`lib/deepLink.ts`), not by a hand-rolled effect per screen. That hook is also
-  where the one written argument for keeping such an effect lives.
-
-**Task status is read-only in the web app.** Only a driver sets it, from mobile.
-The badges and filters stay; the write controls were removed, and
-`features/technical/__tests__/statusIsReadOnly.test.ts` fails if any file under
-`src/features` outside a `queries.ts` calls a status-write hook. Do not
-reintroduce one (TODO-08).
-
-## Scanning an ID — and why no photo is stored
-
-Creating a *persoană fizică* offers **Scanează buletinul**, which fills `nume
-complet` and `CNP` from a photo of the card (TODO-13). Two rules govern it, and
-both are load-bearing.
-
-**1. It reads the MRZ, not the card.** The three 30-character OCR-B lines at the
-bottom of any ICAO 9303 TD1 document. Romania puts the CNP in line 1's
-optional-data field; the name is line 3. That choice is what makes a free
-recogniser sufficient — **the MRZ verifies itself**, via four ICAO check digits,
-the CNP's own control digit (weights `279146358279`, mod 11, 10→1), and the fact
-that the CNP restates the birth date and sex that line 2 states separately.
-
-So: **a read either passes every one of those checks or is refused.** A card
-whose document number smudged is rejected even though nothing uses the document
-number — a failed check digit means something was misread and the parser cannot
-say what. Refusing costs two fields of typing; a false accept writes a wrong CNP
-into a client record nobody re-reads. **Do not "improve" this by accepting
-partial reads.**
-
-The parser lives once, in `web/src/features/sales/idScan/mrz.ts`. It existed
-twice — a byte-identical copy in mobile, pinned to it by
-`shared/id-mrz-cases.json` because the two projects cannot import each other —
-until TODO-33 deleted the mobile Sales section. The fixture stays and is still
-where a case is added; it now has one reader rather than two.
-
-**2. The image never leaves the device and is never stored** (TODO-14). Web runs
-tesseract.js in the browser. Nothing about an identity document is uploaded, so
-`PhotosController`, both `/{clientId}/idPhoto` routes and `GET /api/photos` are
-gone, and `idPhotoUrl` is off the wire. The scanner was on-device on the phone
-too, via ML Kit, and that dependency went with the screen.
-
-Holding rule 2 requires one non-obvious thing: **tesseract.js defaults
-`workerPath`, `corePath` and `langPath` to jsDelivr.** Unset, they would put a
-third party in the request path of an ID scan. `web/scripts/fetch-ocr-assets.mjs`
-puts the engine in `web/public/tesseract/` (copied from `node_modules`, plus a
-checksum-verified language model) and `ocr.ts` points all three at our own
-origin. `ocrIsLazy.test.ts` fails if any of them is dropped, if the file names
-any `http` host, or if the ~6 MB engine stops being dynamically imported.
-
-Same rule as the map, in the other direction: `src/lib/geocoding.ts` keeps our
-bearer token off someone else's host; this keeps someone else's host out of our
-scanner.
-
-**That follow-up is closed** (TODO-45). `Individual.idPhotoUrl`,
-`IndividualRepository` and the `/api/admin/id-photos` purge endpoint are
-deleted: the owner confirmed no photos were ever uploaded, and no committed
-database ever held a stored URL. **One thing was deliberately kept — the
-prefix.** ID photos were written under **`persoane fizice/`**, with the space,
-and `DEPLOYMENT.md` still carries it with a keys-only `aws s3 ls`. That is what
-makes a stray object findable now that nothing in the database points at one; it
-is the safety net that made deleting the column acceptable. The database COLUMN
-still exists — `ddl-auto=update` never drops — and the manual DDL is in
-`DEPLOYMENT.md` too.
-
-**Task photos live in a GCS bucket, with no credential anywhere** (TODO-79).
-`PhotoService` uses `google-cloud-storage` and Application Default Credentials,
-so on Cloud Run it authenticates as the runtime service account, which holds
-`objectAdmin` on that one bucket. The DigitalOcean Spaces key pair — the last
-thing keeping a non-GCP dependency alive, and the only reason
-`BACKEND_SECRETS_JSON` had to exist — is gone. **The bucket's own settings are
-the privacy guarantee**: `uniform_bucket_level_access` refuses per-object ACLs
-outright and `public_access_prevention = "enforced"` refuses a public IAM
-binding, so an object cannot be made world-readable by a code change.
-
-One binding is easy to miss and breaks reads only: V4 signing has no private key
-to sign with, so it goes through the IAM `signBlob` API and the runtime service
-account holds **`roles/iam.serviceAccountTokenCreator` on itself**. Remove it and
-uploads keep working while every photo link starts failing.
-
-**Photos are served as short-lived signed URLs** (TODO-46).
-`GET /api/tasks/{id}/photos` signs a link per request rather than
-returning the stored URL. Two consequences that are easy to get wrong:
-
-- **The signature carries the access, so the guard on the endpoint is the whole
-  authorisation.** `requireCanAccessTask` runs first; a signed URL needs no token,
-  so anything that hands one out without an equivalent check grants access
-  nothing downstream can withhold.
-- **The URLs expire, so no client may persist one.** Web's `useTaskPhotos` sets
-  no `staleTime` and mobile's `CloudPhotoViewer` holds them in component state —
-  both correct today, and both load-bearing. The stored `task_photos.image_url`
-  stays the canonical, unsigned identity of the object.
-
-This was not a theoretical exposure: the object key is
-`poze cabine/{taskId}_{clientName}/{n}`, so a public URL named a customer and its
-last segment counted from 1 — one leaked link walked that client's other photos.
-The GCS bucket is new and has never held a public object; what may still hold
-one is the old Spaces bucket, which `DEPLOYMENT.md` decommissions.
+Skills cover procedures: `verify`, `plan-first`, `api-endpoint`,
+`auth-security`, `order-type`, `web-data-layer`, `web-ui-shadcn`,
+`web-ui-mantine`.
 
 ## Conventions
 
@@ -876,75 +186,3 @@ one is the old Spaces bucket, which `DEPLOYMENT.md` decommissions.
   why it was not done, and what deciding it needs. Mentioning a finding in a
   reply does not record it — replies scroll away, `TODO.md` is the memory.
 
-## Known gaps
-
-Deliberate or unresolved; do not assume these are safe.
-
-- **A phone's menus can lag a role change by up to one token refresh.**
-  Narrowed, not closed, by TODO-35. `user.roles` is still a cached copy — what
-  changed is that it is now re-read from `GET /api/auth/me` at every launch and
-  after every silent refresh, instead of only at claim time. So the window is
-  "until this device's next refresh or restart" (≤30 minutes of use) rather than
-  "until it re-enrolls", and in practice a role change also revokes the
-  employee's sessions (`AdminService.updateEmployee`), which forces the device
-  through enrollment on its very next call. Nothing polls, so a phone sitting
-  idle on a menu shows the old one until it is used. Never a privilege leak —
-  authorization always reads the `Employee` the token points at, never the
-  cached roles.
-- **CLOSED (TODO-103): optimistic locking now exists.** Every entity an operator
-  edits inherits `@Version` from `domain/Auditable`, so a concurrent edit is
-  REFUSED with a 409 instead of silently winning — which used to take the
-  loser's *other* field changes with it, because Spring Data `save()` issues a
-  full-row UPDATE. `Employee` and `Session` are deliberately unversioned (see
-  TODO-103 for why). The web app invalidates its cache on any 409 (TODO-109), so
-  the pane under the toast shows the other person's version.
-- **CLOSED (TODO-101): there is a migration tool.** Flyway owns the schema and
-  `ddl-auto` is `validate` everywhere, so a boot fails loudly when the entities
-  and the migrations disagree. `db/migration/common/` holds the portable
-  migrations; `db/migration/{h2,postgresql}/` hold the ones that genuinely
-  cannot be written once, as two files with the same version, and
-  `repo_hygiene.py` fails a PR that adds one without the other. The test suite
-  builds its schema with Flyway rather than `create-drop`, so every test run
-  executes the migrations — **on H2 only**, which is the remaining gap
-  (TODO-113): production is Postgres and `postgresql/` migrations are verified
-  by hand.
-- **Local dev runs H2 while prod runs Postgres**, so concurrency-sensitive bugs
-  still will not reproduce locally.
-- **Two orphaned tables.** The Mistral-based intake feature was deleted
-  (TODO-15) but `IntakeMessage` and `OrderDraft` were JPA entities, and the
-  `ddl-auto=update` of the time never dropped them — their tables survive in H2
-  and in prod Postgres, and V1 does not recreate them (it was generated from
-  today's entities). Nothing in the code references them. **Since TODO-101 the
-  tidy way to remove them is a migration, not a hand-run `ALTER`.**
-  **Do not resurrect the feature:** AI work is postponed (TODO-17) and the only
-  sanctioned future use is autofill.
-- **Installed phones are one OTA behind, not one rebuild behind** (corrected by
-  TODO-72). TODO-33 deleted the Sales and Technical screens and TODO-71 retired
-  the droplet those phones call, and both of those ship over the air: screens
-  are JS, and `EXPO_PUBLIC_*` is inlined by the **bundler**, which `eas update`
-  runs. `expo.version` has not moved since before TODO-33 and `runtimeVersion`
-  is `appVersion`, so every install in the field is still in an update's range.
-  What an OTA genuinely cannot remove is native — the now-unused modules
-  (`react-native-maps`, ML Kit text recognition, the calendar and
-  draggable-list packages), the Maps key `app.config.js` used to write into the
-  manifest, and the Android cleartext-HTTP exemption (TODO-85) — and that is
-  dead weight rather than a fault. Until the update is shipped, an old install
-  still renders Sales and Technical against a backend that will happily serve an
-  office role. `DEPLOYMENT.md` has the ordered cutover; `deploy-mobile.yml`
-  refuses to ship at all while `EXPO_PUBLIC_API_BASE_URL` is unset, because an
-  OTA reaches the whole fleet and the fallback is `localhost`.
-- **The `individual.id_photo_url` COLUMN outlives the field that mapped it.**
-  The Java side is gone (TODO-45) but `ddl-auto=update` never drops, so the
-  column sits in H2 and in Postgres like the orphaned `intake_message` /
-  `order_draft` tables above. Nothing reads or writes it. `DEPLOYMENT.md` has
-  the `ALTER TABLE` and the bucket check to run first.
-- **Installed phones still call the retired droplet, until an update ships.**
-  Every bundle in the field carries the old `http://146.190.224.202:8080/api`,
-  because `EXPO_PUBLIC_*` is inlined when the bundler runs. That is fixed by
-  setting the `EXPO_PUBLIC_API_BASE_URL` repository *variable* to the Cloud Run
-  URL and running Deploy Mobile — an OTA is enough, no `eas build` needed
-  (TODO-72). The fallback in `mobile/constants/ApiConfig.ts` is
-  `http://localhost:8080/api`, right for a developer running compose and
-  obviously-wrong-but-diagnosable otherwise; an **empty** value counts as unset
-  there, since an unset GitHub variable interpolates to `''` and `??` would not
-  catch it.

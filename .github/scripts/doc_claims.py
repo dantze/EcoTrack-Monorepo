@@ -126,7 +126,13 @@ def resolves(token: str, from_file: str | None = None) -> bool:
 BACKTICKED = re.compile(r"`([^`\n]+)`")
 PATHLIKE = re.compile(r"^[@\w./*-]+$")
 
-doc_files = ["CLAUDE.md"] + sorted(
+# CLAUDE.md is the short index; the detail it used to hold moved, with its
+# headings unchanged, into docs/architecture/*.md. Those files are the same
+# reference split up, so they get every check CLAUDE.md gets.
+ARCH_DOCS = sorted(
+    p.relative_to(ROOT).as_posix() for p in (ROOT / "docs" / "architecture").glob("*.md")
+)
+doc_files = ["CLAUDE.md"] + ARCH_DOCS + sorted(
     p.relative_to(ROOT).as_posix() for p in (ROOT / ".claude" / "skills").rglob("*.md")
 )
 
@@ -177,7 +183,13 @@ CLAUDE_MD = ROOT / "CLAUDE.md"
 
 # Prose wraps across lines, so a claim like "30-minute\naccess" must be matched
 # against a whitespace-normalised copy or every pin is a false failure.
-CLAUDE_TEXT = CLAUDE_MD.read_text(encoding="utf-8") if CLAUDE_MD.is_file() else ""
+# The pins apply to the reference as a whole — CLAUDE.md plus the architecture
+# files it was split into — since a claim moving between them is not a change.
+CLAUDE_TEXT = "\n".join(
+    (ROOT / rel).read_text(encoding="utf-8")
+    for rel in ["CLAUDE.md"] + ARCH_DOCS
+    if (ROOT / rel).is_file()
+)
 CLAUDE_FLAT = re.sub(r"\s+", " ", CLAUDE_TEXT)
 # Emphasis lands anywhere in a claim ("**365-day**", "**defaults to `true`**"),
 # so pin against a copy with the markers removed rather than trying to spell
