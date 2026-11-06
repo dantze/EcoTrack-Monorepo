@@ -23,6 +23,7 @@
 import { MOCK_LATENCY_MS } from '@/lib/config';
 import type {
   AccessRequest,
+  ApproveRequestInput,
   ClaimResult,
   EnrollmentRequestInput,
   EnrollmentStatus,
@@ -1519,8 +1520,14 @@ function makeVerificationCode(): string {
   return String(Math.floor(Math.random() * 1_000_000)).padStart(6, '0');
 }
 
-function findApprovableEmployee(role: Role): { employee: Employee; emailRow: EmployeeEmailRow } | null {
-  const employee = db.employees.find((e) => e.roles.includes(role));
+function findApprovableEmployee(
+  role: Role,
+  employeeId: number | null = null,
+): { employee: Employee; emailRow: EmployeeEmailRow } | null {
+  const employee =
+    employeeId !== null
+      ? db.employees.find((e) => e.id === employeeId)
+      : db.employees.find((e) => e.roles.includes(role));
   const emailRow = employee && db.employeeEmails.find((c) => c.employeeId === employee.id);
   if (!employee || !emailRow) return null;
   return { employee, emailRow };
@@ -1550,6 +1557,7 @@ const enrollmentApi: EcoTrackApi['enrollment'] = {
         createdAt: new Date().toISOString(),
         expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
         assignedRoleName: isDev ? 'ADMIN' : null,
+        employeeId: null,
         claimSecret: `mock.claim.${Math.random().toString(36).slice(2)}`,
       };
       db.accessRequests.push(row);
@@ -1578,7 +1586,7 @@ const enrollmentApi: EcoTrackApi['enrollment'] = {
         return { state: 'expired', message: 'Cererea a expirat. Trimite o cerere nouă.' };
       }
 
-      const match = findApprovableEmployee(row.assignedRoleName ?? 'DRIVER');
+      const match = findApprovableEmployee(row.assignedRoleName ?? 'DRIVER', row.employeeId);
       if (!match) return { state: 'unknown', message: 'Rol indisponibil' };
 
       row.status = 'CLAIMED';
@@ -1597,18 +1605,31 @@ const enrollmentApi: EcoTrackApi['enrollment'] = {
         .filter((r) => r.status === 'PENDING' || r.status === 'APPROVED')
         .filter((r) => new Date(r.expiresAt).getTime() > now)
         .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-        .map(({ claimSecret: _secret, ...rest }) => rest);
+        // Neither secret leaves the store: the code is what the admin must
+        // hear from the requester (TODO-116), exactly as live omits it.
+        .map(({ claimSecret: _secret, verificationCode: _code, employeeId: _employee, ...rest }) => rest);
     });
   },
 
-  approve(id: number, role: Role): Promise<void> {
+  approve(id: number, input: ApproveRequestInput): Promise<void> {
     return respond((): void => {
       currentEmployee();
       const row = db.accessRequests.find((r) => r.id === id);
       if (!row) throw new MockApiError('Cererea nu a fost găsită', 404);
       if (row.status !== 'PENDING') throw new MockApiError('Cererea a fost deja procesată', 409);
+      if (input.verificationCode.trim() !== row.verificationCode) {
+        throw new MockApiError('Codul nu corespunde. Cere-i persoanei codul afișat pe ecranul ei.', 400);
+      }
+      if (input.employeeId !== undefined) {
+        const existing = db.employees.find((e) => e.id === input.employeeId);
+        if (!existing) throw new MockApiError('Angajatul nu a fost găsit', 404);
+        row.employeeId = existing.id;
+        row.assignedRoleName = existing.roles.includes('ADMIN') ? 'ADMIN' : (existing.roles[0] ?? null);
+      } else {
+        if (!input.role) throw new MockApiError('Rol invalid', 400);
+        row.assignedRoleName = input.role;
+      }
       row.status = 'APPROVED';
-      row.assignedRoleName = role;
       row.expiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
     });
   },

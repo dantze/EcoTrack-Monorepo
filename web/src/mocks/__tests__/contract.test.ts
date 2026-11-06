@@ -126,12 +126,46 @@ describe('enrollment + auth', () => {
       fullName: 'Sofer Nou',
       deviceId: 'driver-device',
     });
-    await api.enrollment.approve(ticket.requestId, 'DRIVER');
+    await api.enrollment.approve(ticket.requestId, {
+      role: 'DRIVER',
+      verificationCode: ticket.verificationCode,
+    });
 
     const claimed = await api.enrollment.claim(ticket.requestId, ticket.claimSecret);
     expect(claimed.state).toBe('issued');
     if (claimed.state !== 'issued') throw new Error('unreachable');
     expect(claimed.session.user.roles).toContain('DRIVER');
+  });
+
+  it('refuses an approval whose code does not match, and leaves the request pending (TODO-116)', async () => {
+    const session = await enrollDevDevice();
+    setAccessToken(session.tokens.accessToken);
+
+    const ticket = await api.enrollment.request({ fullName: 'Impostor', deviceId: 'code-device' });
+    const wrong = ticket.verificationCode === '000000' ? '111111' : '000000';
+    await expect(
+      api.enrollment.approve(ticket.requestId, { role: 'DRIVER', verificationCode: wrong }),
+    ).rejects.toMatchObject({ status: 400 });
+
+    const claimed = await api.enrollment.claim(ticket.requestId, ticket.claimSecret);
+    expect(claimed.state).toBe('pending');
+  });
+
+  it('re-enrols an existing employee instead of minting a new one (TODO-116)', async () => {
+    const session = await enrollDevDevice();
+    setAccessToken(session.tokens.accessToken);
+    const [driver] = await api.employees.listDrivers();
+    if (!driver) throw new Error('seed has no driver');
+
+    const ticket = await api.enrollment.request({ fullName: driver.fullName, deviceId: 'new-phone' });
+    await api.enrollment.approve(ticket.requestId, {
+      verificationCode: ticket.verificationCode,
+      employeeId: driver.id,
+    });
+
+    const claimed = await api.enrollment.claim(ticket.requestId, ticket.claimSecret);
+    if (claimed.state !== 'issued') throw new Error(`expected issued, got ${claimed.state}`);
+    expect(claimed.session.user.id).toBe(driver.id);
   });
 
   it('never yields tokens for a rejected request', async () => {
@@ -148,14 +182,15 @@ describe('enrollment + auth', () => {
     expect(claimed.state).toBe('rejected');
   });
 
-  it('never exposes the claim secret through the admin queue', async () => {
+  it('never exposes the claim secret or the code through the admin queue', async () => {
     const session = await enrollDevDevice();
     setAccessToken(session.tokens.accessToken);
 
     const rows = await api.enrollment.listRequests();
     for (const row of rows) {
       expect(row).not.toHaveProperty('claimSecret');
-      expect(row.verificationCode).toMatch(/^\d{6}$/);
+      // The admin must hear the code from the requester, not read it here.
+      expect(row).not.toHaveProperty('verificationCode');
     }
   });
 

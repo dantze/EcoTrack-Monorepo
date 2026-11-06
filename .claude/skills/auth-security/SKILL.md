@@ -35,7 +35,7 @@ base properties, inherited by prod). Every mistake here is live, not latent.
 | 401, no `Authorization` header on the wire | the client never attached one: web `tokenBridge` not registered, or mobile has no stored pair |
 | 401 with a token that "should" work | `reject-invalid-bearer`. The session is unknown, expired or revoked — access tokens last 30 minutes and the client is meant to refresh |
 | logged out immediately / refresh loop | refresh tokens **rotate on every use**, so two parallel refreshes invalidate each other. Both clients single-flight the refresh for exactly this reason — keep it that way |
-| 403 with a valid token | either the role matrix (wrong role for that verb) or `TaskAccessPolicy` (right role, wrong row). The policy's messages are Romanian |
+| 403 with a valid token | either the role matrix (wrong role for that verb — a DRIVER reading anything outside `/api/tasks/**` and `/api/routes/employee/**` lands here since TODO-116) or `TaskAccessPolicy` (right role, wrong row). The policy's messages are Romanian |
 | everything denied, reads included | the request fell through to `anyRequest().denyAll()` — the path is not under `/api/**`, or it hit the infra deny-list |
 | works locally, 401 in prod | prod inherits `enforce=true` from the base properties; a local run with the property unset falls back to `SecurityConfig`'s `@Value` default of `false` |
 
@@ -46,9 +46,15 @@ There is no password and no Google sign-in — `/api/auth/login` and
 
 1. `POST /api/enrollment/request` — full name + device id, answers a 6-digit
    code. Public by necessity, so it is rate-limited per device
-   (`ecotrack.enrollment.max-requests-per-device-per-hour`).
-2. An ADMIN approves or rejects under `/api/admin/enrollment/**`, choosing the
-   role. Assignable roles are `EnrollmentService.ASSIGNABLE_ROLES`.
+   (`ecotrack.enrollment.max-requests-per-device-per-hour`) and per caller
+   address (`max-requests-per-ip-per-hour`, read through
+   `ecotrack.security.forwarded-for-hops`), because the device id is the
+   client's own invention.
+2. An ADMIN approves or rejects under `/api/admin/enrollment/**`. Approval
+   **requires the 6-digit code**, which the admin's list does not carry — the
+   person reads it out (TODO-116). It either picks a role for a NEW employee
+   (`EnrollmentService.ASSIGNABLE_ROLES`) or names an existing `employeeId`, so
+   a new phone signs in as the same person rather than a duplicate.
 3. `POST /api/enrollment/claim` — issues the access/refresh pair.
 4. **First run:** the first request against an empty database is auto-approved
    as ADMIN, gated by a one-time setup code logged at startup while
@@ -73,11 +79,11 @@ the same treatment.
 Read the value from `backend/src/main/resources/application.properties`; never
 hardcode one in a service or a client. The knobs, all documented in place:
 
-`ecotrack.security.` — `enforce`, `reject-invalid-bearer`,
+`ecotrack.security.` — `enforce`, `reject-invalid-bearer`, `forwarded-for-hops`,
 `access-token-ttl-minutes`, `refresh-token-ttl-days`, `max-sessions-per-user`,
 `session-retention-days`, `session-prune-cron`.
 `ecotrack.enrollment.` — `request-ttl-minutes`, `claim-ttl-minutes`,
-`require-setup-code`, `max-requests-per-device-per-hour`.
+`require-setup-code`, `max-requests-per-device-per-hour`, `max-requests-per-ip-per-hour`.
 Plus `ecotrack.cors.allowed-origins` — **CORS is owned by `SecurityConfig`, not
 `WebConfig`**; adding a second registration double-adds headers.
 
@@ -172,7 +178,11 @@ cd backend && ./gradlew build     # once, before pushing
   is listed in `.github/scripts/cross_project_invariants.py`. A new mobile call
   fails repo-hygiene until it is declared there — and if it is a write, until
   `SecurityConfig` has a matcher row for it above the catch-alls.
-- **Don't rely on the last-admin lockout guard.** It exists only in
-  `web/src/features/admin/EmployeesPage.tsx`. The backend has no equivalent
-  check, so an API caller can demote the last ADMIN and lock everyone out of
-  `/api/admin/**` permanently.
+- **Don't remove the backend last-admin guard.** `AdminService` refuses to
+  demote or delete the last ADMIN (`LastAdminGuardTest`); the check in
+  `web/src/features/admin/EmployeesPage.tsx` is only the friendly half. (This
+  line used to say the backend had no guard — it outlived the fix.)
+- **Don't give drivers a read by widening the office default.** Reads under
+  `/api/**` are `OFFICE` except `GET /api/tasks/**` and
+  `GET /api/routes/employee/**`, both row-scoped by `TaskAccessPolicy`. A new
+  driver read is a new `GET` row above the default plus a policy call.

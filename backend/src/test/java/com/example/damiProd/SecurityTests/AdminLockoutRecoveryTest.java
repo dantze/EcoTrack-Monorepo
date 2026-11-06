@@ -203,7 +203,8 @@ class AdminLockoutRecoveryTest {
         mockMvc.perform(post("/api/admin/enrollment/requests/" + requestId + "/approve")
                         .header("Authorization", "Bearer " + adminAccess)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(Map.of("roleName", "DRIVER"))))
+                        .content(objectMapper.writeValueAsString(Map.of("roleName", "DRIVER",
+                                "verificationCode", driverRequest.get("verificationCode").asText()))))
                 .andExpect(status().isOk());
         claim(requestId, driverRequest.get("claimSecret").asText());
 
@@ -243,7 +244,8 @@ class AdminLockoutRecoveryTest {
                         + pending.get("requestId").asLong() + "/approve")
                         .header("Authorization", "Bearer " + issued.get("accessToken").asText())
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(Map.of("roleName", "DRIVER"))))
+                        .content(objectMapper.writeValueAsString(Map.of("roleName", "DRIVER",
+                                "verificationCode", pending.get("verificationCode").asText()))))
                 .andExpect(status().isOk());
     }
 

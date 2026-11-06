@@ -10,7 +10,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { UseMutationResult, UseQueryResult } from '@tanstack/react-query';
 import { api } from '@/api';
-import type { AccessRequest, SessionDevice } from '@/api/contract';
+import type { AccessRequest, ApproveRequestInput, SessionDevice } from '@/api/contract';
 import type { Employee, Role } from '@/types/domain';
 
 export const keys = {
@@ -37,10 +37,14 @@ export function useAccessRequests(): UseQueryResult<AccessRequest[]> {
   });
 }
 
-export function useApproveRequest(): UseMutationResult<void, unknown, { id: number; role: Role }> {
+export function useApproveRequest(): UseMutationResult<
+  void,
+  unknown,
+  { id: number } & ApproveRequestInput
+> {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, role }) => api.enrollment.approve(id, role),
+    mutationFn: ({ id, ...input }) => api.enrollment.approve(id, input),
     // Approval creates the Employee, so the roster is dirty too.
     onSuccess: () => client.invalidateQueries({ queryKey: keys.root }),
   });

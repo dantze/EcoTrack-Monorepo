@@ -44,9 +44,9 @@ public class TokenService {
      * Reuse of any remembered hash revokes the session. A token older than this
      * many rotations is already dead - the cap only limits how far back a replay
      * stays *attributable* to theft, in exchange for a bounded row: a session
-     * that refreshes every 30 minutes for its 365-day life rotates ~17,500 times
-     * (ecotrack.security.refresh-token-ttl-days, see application.properties for
-     * why the window is a year).
+     * that refreshes every 30 minutes for a year rotates ~17,500 times (the
+     * ecotrack.security.refresh-token-ttl-days window slides on every refresh,
+     * so an active session has no fixed end).
      */
     private static final int MAX_RETIRED_TOKEN_HASHES = 10;
 
@@ -70,7 +70,7 @@ public class TokenService {
 
     public TokenService(SessionRepository sessionRepository,
             @Value("${ecotrack.security.access-token-ttl-minutes:30}") long accessTokenTtlMinutes,
-            @Value("${ecotrack.security.refresh-token-ttl-days:365}") long refreshTokenTtlDays,
+            @Value("${ecotrack.security.refresh-token-ttl-days:30}") long refreshTokenTtlDays,
             @Value("${ecotrack.security.max-sessions-per-user:10}") int maxSessionsPerUser,
             @Value("${ecotrack.security.session-retention-days:30}") long sessionRetentionDays) {
         this.sessionRepository = sessionRepository;
@@ -114,7 +114,7 @@ public class TokenService {
 
     /**
      * Caps how many live sessions one employee can accumulate. Without this,
-     * every enrolment adds a 365-day credential that nothing ever cleans up, so a
+     * every enrolment adds a long-lived credential that nothing ever cleans up, so a
      * years-old forgotten device stays a valid way into the account. The
      * least-recently-used sessions above the cap are revoked, oldest first.
      *
@@ -167,7 +167,7 @@ public class TokenService {
         String presentedHash = hash(rawRefreshToken);
         Instant now = Instant.now();
 
-        Optional<Session> current = sessionRepository.findByRefreshTokenHash(presentedHash);
+        Optional<Session> current = sessionRepository.findForUpdateByRefreshTokenHash(presentedHash);
         if (current.isPresent()) {
             Session session = current.get();
             if (!session.isActive(now)) {

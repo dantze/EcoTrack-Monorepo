@@ -4,12 +4,14 @@
  * This screen is the entire access-control system: nobody gets into EcoTrack
  * except through a row here. Two things on it carry real weight:
  *
- *   - The SIX-DIGIT CODE is shown to the requester on their own screen too.
- *     Approving without checking it matches what the person reads out is what
- *     lets an attacker be approved in someone else's name, so the UI leads
- *     with it rather than burying it.
- *   - The ROLE is chosen at approval time and is what the person gets. There
- *     is no separate "set role later" step.
+ *   - The SIX-DIGIT CODE is on the requester's screen and NOT on this one
+ *     (TODO-116). The admin types what the person reads out, and the server
+ *     refuses a mismatch. It used to be shown here, which made checking it
+ *     optional — and approving by name alone is what lets an attacker be
+ *     approved in someone else's name.
+ *   - WHO the device becomes: a new employee with the chosen role, or an
+ *     existing one (a new phone, a revoked device). Re-enrolling someone as
+ *     "new" used to mint a duplicate person with none of their routes.
  *
  * Requests expire on their own (ten minutes), so the list polls and shows a
  * live countdown — a stale queue here is actively misleading.
@@ -18,10 +20,11 @@
 import { useState } from 'react';
 import type { AccessRequest } from '@/api/contract';
 import { CommandBar, Workbench, WorkbenchBody } from '@/components/layout';
-import { Badge, Button, EmptyState, Select, Spinner, useToast } from '@/components/ui';
+import { serverMessage } from '@/api';
+import { Badge, Button, EmptyState, Select, Spinner, TextInput, useToast } from '@/components/ui';
 import { ROLE_LABELS } from '@/components/domain';
 import type { Role } from '@/types/domain';
-import { useAccessRequests, useApproveRequest, useRejectRequest } from './queries';
+import { useAccessRequests, useAllEmployees, useApproveRequest, useRejectRequest } from './queries';
 
 /**
  * Roles an admin may grant, driver first because it is the common case.
@@ -38,14 +41,22 @@ function remaining(expiresAt: string): string | null {
   return `${minutes}:${String(seconds).padStart(2, '0')}`;
 }
 
+/** Sentinel for "create a new employee" in the person picker. */
+const NEW_EMPLOYEE = 'new';
+
 function RequestCard({ request }: { request: AccessRequest }) {
   const [role, setRole] = useState<Role>('DRIVER');
+  const [person, setPerson] = useState<string>(NEW_EMPLOYEE);
+  const [code, setCode] = useState('');
+  const employees = useAllEmployees();
   const approve = useApproveRequest();
   const reject = useRejectRequest();
   const toast = useToast();
   const busy = approve.isPending || reject.isPending;
   const countdown = remaining(request.expiresAt);
   const decided = request.status !== 'PENDING';
+  const existing = person === NEW_EMPLOYEE ? null : (employees.data ?? []).find((e) => String(e.id) === person);
+  const codeComplete = /^\d{6}$/.test(code);
 
   return (
     <li className="rounded-lg border border-border bg-surface p-5">
@@ -57,14 +68,9 @@ function RequestCard({ request }: { request: AccessRequest }) {
           </p>
         </div>
 
-        <div className="text-right">
-          <p className="font-mono text-3xl tracking-[0.2em] text-ink">
-            {request.verificationCode}
-          </p>
-          <p className="mt-1 text-xs text-ink-muted">
-            {decided ? 'Aprobat — se așteaptă dispozitivul' : `Expiră în ${countdown ?? '0:00'}`}
-          </p>
-        </div>
+        <p className="text-right text-xs text-ink-muted">
+          {decided ? 'Aprobat — se așteaptă dispozitivul' : `Expiră în ${countdown ?? '0:00'}`}
+        </p>
       </div>
 
       {decided ? (
@@ -75,13 +81,41 @@ function RequestCard({ request }: { request: AccessRequest }) {
         </div>
       ) : (
         <div className="mt-5 flex flex-wrap items-end gap-3">
-          <Select
-            label="Rol"
-            value={role}
-            onChange={(next) => setRole(next as Role)}
-            options={ASSIGNABLE.map((option) => ({ value: option, label: ROLE_LABELS[option] }))}
-            className="w-44"
+          <TextInput
+            label="Codul persoanei"
+            value={code}
+            onChange={(event) => setCode(event.target.value.replace(/\D/g, '').slice(0, 6))}
+            inputMode="numeric"
+            autoComplete="off"
+            placeholder="6 cifre"
+            fieldClassName="w-36"
+            className="font-mono tracking-[0.2em]"
           />
+
+          {/* The kit's Select field is full-width; the box sets its width in the row. */}
+          <div className="w-52">
+            <Select
+              label="Persoană"
+              value={person}
+              onChange={setPerson}
+              searchable
+              options={[
+                { value: NEW_EMPLOYEE, label: 'Angajat nou' },
+                ...(employees.data ?? []).map((e) => ({ value: String(e.id), label: e.fullName })),
+              ]}
+            />
+          </div>
+
+          {existing ? null : (
+            <div className="w-36">
+              <Select
+                label="Rol"
+                value={role}
+                onChange={(next) => setRole(next as Role)}
+                options={ASSIGNABLE.map((option) => ({ value: option, label: ROLE_LABELS[option] }))}
+              />
+            </div>
+          )}
 
           {/*
             Explicitly primary. `Button` defaults to `secondary`, and this is
@@ -92,14 +126,20 @@ function RequestCard({ request }: { request: AccessRequest }) {
           */}
           <Button
             variant="primary"
-            disabled={busy}
+            disabled={busy || !codeComplete}
             onClick={() =>
               approve.mutate(
-                { id: request.id, role },
+                existing
+                  ? { id: request.id, verificationCode: code, employeeId: existing.id }
+                  : { id: request.id, verificationCode: code, role },
                 {
                   onSuccess: () =>
-                    toast.success(`${request.fullName} a primit rolul ${ROLE_LABELS[role]}.`),
-                  onError: () => toast.error('Aprobarea a eșuat.'),
+                    toast.success(
+                      existing
+                        ? `Dispozitivul a fost asociat cu ${existing.fullName}.`
+                        : `${request.fullName} a primit rolul ${ROLE_LABELS[role]}.`,
+                    ),
+                  onError: (error) => toast.error(serverMessage(error) ?? 'Aprobarea a eșuat.'),
                 },
               )
             }
@@ -136,7 +176,7 @@ export function AccessRequestsPage() {
         subtitle={
           isLoading
             ? 'Se încarcă…'
-            : `${requests.length} în așteptare · verifică codul cu persoana care cere accesul, apoi alege-i rolul`
+            : `${requests.length} în așteptare · cere-i persoanei codul de pe ecranul ei, apoi alege cine este`
         }
       />
 

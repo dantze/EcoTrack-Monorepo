@@ -20,6 +20,7 @@
 import type {
   AccessRequest,
   AccessRequestStatus,
+  ApproveRequestInput,
   AuthSession,
   ClaimResult,
   EnrollmentApi,
@@ -52,7 +53,6 @@ interface RawClaimEnvelope {
 interface RawAccessRequest {
   id: number;
   fullName?: string;
-  verificationCode?: string;
   deviceLabel?: string | null;
   status?: string;
   createdAt?: string;
@@ -76,7 +76,6 @@ function normalizeRequest(raw: RawAccessRequest): AccessRequest {
   return {
     id: num(raw.id),
     fullName: raw.fullName ?? '',
-    verificationCode: raw.verificationCode ?? '',
     deviceLabel: optStr(raw.deviceLabel),
     status: (raw.status ?? 'PENDING') as AccessRequestStatus,
     createdAt: raw.createdAt ?? '',
@@ -165,10 +164,14 @@ export const enrollmentApi: EnrollmentApi = {
     return (raw ?? []).map(normalizeRequest);
   },
 
-  async approve(id: number, role: Role): Promise<void> {
+  async approve(id: number, input: ApproveRequestInput): Promise<void> {
     await request<unknown>(`/admin/enrollment/requests/${id}/approve`, {
       method: 'POST',
-      body: { roleName: role },
+      body: {
+        roleName: input.role,
+        verificationCode: input.verificationCode,
+        employeeId: input.employeeId,
+      },
     });
   },
 

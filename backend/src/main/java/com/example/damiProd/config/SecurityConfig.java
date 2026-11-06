@@ -90,7 +90,7 @@ public class SecurityConfig {
     private static final List<String> ALLOWED_CORS_HEADERS =
             List.of("Authorization", "Content-Type", "Accept", "Accept-Language", "X-Requested-With");
 
-    @Value("${ecotrack.security.enforce:false}")
+    @Value("${ecotrack.security.enforce:true}")
     private boolean enforceSecurity;
 
     @Value("${ecotrack.cors.allowed-origins:http://localhost:5173}")
@@ -234,7 +234,15 @@ public class SecurityConfig {
                     .requestMatchers(HttpMethod.DELETE, "/api/**").hasAnyRole(OFFICE)
 
                     // ---- Reads: any authenticated employee ------------------------------
-                    .requestMatchers("/api/**").authenticated()
+                    // Reads are office data by default (TODO-116). A driver used to
+                    // GET everything here - every client's CNP, phone and e-mail,
+                    // every order, every employee - because this row was
+                    // authenticated(). The driver app reads exactly two trees, and
+                    // both are row-scoped in their controllers by TaskAccessPolicy.
+                    // A new driver read needs a row HERE, above the office default.
+                    .requestMatchers(HttpMethod.GET, "/api/tasks/**", "/api/routes/employee/**")
+                    .authenticated()
+                    .requestMatchers("/api/**").hasAnyRole(OFFICE)
 
                     // Container-generated error dispatches must stay reachable, or a 401
                     // would turn into a 403 loop.

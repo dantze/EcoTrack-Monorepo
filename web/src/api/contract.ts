@@ -125,12 +125,14 @@ export interface AuthSession {
 /** Lifecycle of one access request. Mirrors the backend enum exactly. */
 export type AccessRequestStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'EXPIRED' | 'CLAIMED';
 
-/** One row in the admin's "Cereri de acces" queue. Never carries the claim secret. */
+/**
+ * One row in the admin's "Cereri de acces" queue. Never carries the claim
+ * secret, and no longer the six-digit code either (TODO-116): the admin must
+ * hear it from the person holding the device and type it into `approve`.
+ */
 export interface AccessRequest {
   id: number;
   fullName: string;
-  /** Six digits, shown to the requester too — the admin checks they match. */
-  verificationCode: string;
   deviceLabel: string | null;
   status: AccessRequestStatus;
   createdAt: string;
@@ -168,6 +170,16 @@ export interface EnrollmentTicket {
   expiresAt: string;
   /** True on a fresh instance: the first requester is admin, no waiting. */
   autoApproved: boolean;
+}
+
+/** Body of an approval (TODO-116). */
+export interface ApproveRequestInput {
+  /** What the requester reads out from their own screen. Required. */
+  verificationCode: string;
+  /** Role for a NEW employee. Ignored when `employeeId` is set. */
+  role?: Role;
+  /** Re-enrol this existing employee (new phone, revoked device) instead of creating one. */
+  employeeId?: number;
 }
 
 export interface EnrollmentRequestInput {
@@ -246,7 +258,7 @@ export interface EnrollmentApi {
   /** GET /admin/enrollment/requests */
   listRequests(): Promise<AccessRequest[]>;
   /** POST /admin/enrollment/requests/{id}/approve */
-  approve(id: number, role: Role): Promise<void>;
+  approve(id: number, input: ApproveRequestInput): Promise<void>;
   /** POST /admin/enrollment/requests/{id}/reject */
   reject(id: number): Promise<void>;
 }

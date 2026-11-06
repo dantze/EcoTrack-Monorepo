@@ -61,6 +61,12 @@ class EnrollmentFlowTest {
         return objectMapper.readTree(json);
     }
 
+    /** Approval needs the code the requester reads out (TODO-116). */
+    private String approveBody(String role, JsonNode request) throws Exception {
+        return objectMapper.writeValueAsString(java.util.Map.of(
+                "roleName", role, "verificationCode", request.get("verificationCode").asText()));
+    }
+
     private org.springframework.test.web.servlet.ResultActions claim(long id, String secret) throws Exception {
         String body = objectMapper.writeValueAsString(java.util.Map.of(
                 "requestId", id, "claimSecret", secret));
@@ -110,7 +116,7 @@ class EnrollmentFlowTest {
         mockMvc.perform(post("/api/admin/enrollment/requests/" + id + "/approve")
                         .header("Authorization", "Bearer " + adminToken)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"roleName\":\"DRIVER\"}"))
+                        .content(approveBody("DRIVER", driver)))
                 .andExpect(status().isOk());
 
         String json = claim(id, driver.get("claimSecret").asText())
@@ -175,7 +181,7 @@ class EnrollmentFlowTest {
         mockMvc.perform(post("/api/admin/enrollment/requests/" + driverId + "/approve")
                         .header("Authorization", "Bearer " + adminToken)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"roleName\":\"DRIVER\"}"))
+                        .content(approveBody("DRIVER", driverReq)))
                 .andExpect(status().isOk());
         String driverJson = claim(driverId, driverReq.get("claimSecret").asText())
                 .andReturn().getResponse().getContentAsString();
@@ -185,7 +191,7 @@ class EnrollmentFlowTest {
         mockMvc.perform(post("/api/admin/enrollment/requests/" + third.get("requestId").asLong() + "/approve")
                         .header("Authorization", "Bearer " + driverToken)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"roleName\":\"ADMIN\"}"))
+                        .content(approveBody("ADMIN", third)))
                 .andExpect(status().isForbidden());
     }
 
@@ -197,7 +203,7 @@ class EnrollmentFlowTest {
         mockMvc.perform(post("/api/admin/enrollment/requests/" + req.get("requestId").asLong() + "/approve")
                         .header("Authorization", "Bearer " + adminToken)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"roleName\":\"SUPERUSER\"}"))
+                        .content(approveBody("SUPERUSER", req)))
                 .andExpect(status().isBadRequest());
     }
 

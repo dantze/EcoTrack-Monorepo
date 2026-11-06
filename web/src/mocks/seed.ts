@@ -752,6 +752,7 @@ export function createSeedDb(): MockDb {
       createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
       expiresAt: new Date(Date.now() + 8 * 60_000).toISOString(),
       assignedRoleName: null,
+      employeeId: null,
       claimSecret: 'mock.claim.seed.marius',
     },
     {
@@ -763,6 +764,7 @@ export function createSeedDb(): MockDb {
       createdAt: new Date(Date.now() - 5 * 60_000).toISOString(),
       expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
       assignedRoleName: null,
+      employeeId: null,
       claimSecret: 'mock.claim.seed.elena',
     },
   ];

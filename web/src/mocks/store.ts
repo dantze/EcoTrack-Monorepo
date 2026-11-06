@@ -178,6 +178,8 @@ export interface AccessRequestRow {
   createdAt: string;
   expiresAt: string;
   assignedRoleName: Role | null;
+  /** Set when approved as an existing employee (TODO-116); the claim signs in as them. */
+  employeeId: number | null;
   claimSecret: string;
 }
 

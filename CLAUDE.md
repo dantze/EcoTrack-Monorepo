@@ -123,7 +123,13 @@ stops you "fixing" it.
 - **The role matrix in `SecurityConfig` is first-match-wins**, and a new mobile
   write needs a row above the catch-alls *and* an entry in
   `.github/scripts/cross_project_invariants.py`. → `api-endpoint` skill
+- **Reads are office-only by default.** A driver may GET only `/api/tasks/**`
+  and `/api/routes/employee/**`, both row-scoped; a new driver read needs its
+  own row and a policy call. → `api-endpoint` skill
 - **A new task endpoint needs a `TaskAccessPolicy` call**, not just a matcher.
+- **Approving a device needs the code the person reads out**, and can re-enrol
+  an existing employee instead of minting a duplicate. →
+  `docs/architecture/auth-security.md`
 - **Controller slices prove nothing about auth** — security tests go in
   `SecurityTests/` against the real chain.
 - **A new unauthenticated endpoint needs `{ anonymous: true }` on mobile.**

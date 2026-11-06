@@ -11,7 +11,28 @@ text here — `CLAUDE.md`'s *Deeper reading* table maps each heading to this fil
 with. **Device enrollment is the only way to obtain a session:**
 `POST /api/enrollment/request` (full name + device id) answers with a 6-digit
 code, an ADMIN approves the request under `/api/admin/enrollment/**`, and
-`POST /api/enrollment/claim` then issues the token pair. The first request
+`POST /api/enrollment/claim` then issues the token pair.
+
+**Approving requires the code, typed by the admin** (TODO-116). The code is on
+the requester's screen and no longer in the admin's list; the person reads it
+out and the server refuses a mismatch with a 400. When the code was displayed
+next to the Aprobă button, checking it was optional — and a request filed in a
+real employee's name was approved on the name alone. **Approval can also name
+an existing employee** (`employeeId` in the body): the device then signs in as
+that person, with their roles, routes and history, and no row is created. Every
+approval used to mint a new `Employee`, so a new phone — or the re-enrolment a
+role change forces, since it revokes every session — produced a duplicate
+person with none of their work.
+
+`POST /api/enrollment/request` is limited **per caller address** as well as per
+device id (`ecotrack.enrollment.max-requests-per-ip-per-hour`), because the
+device id is chosen by the client and a fresh one per request walked past the
+device limit. The address is the X-Forwarded-For entry
+`ecotrack.security.forwarded-for-hops` places from the right (1 on Cloud Run,
+whose front end appends what it saw); entries further left are the caller's own
+writing and are ignored. The counter is in memory, per instance — a brake on
+queue spam, not a guarantee — and is off under the `test` profile because every
+MockMvc request shares 127.0.0.1; `EnrollmentIpRateLimitTest` turns it on. The first request
 against an empty database is auto-approved as ADMIN — gated by a one-time setup
 code logged at startup while `ecotrack.enrollment.require-setup-code=true` — so
 whoever opens a fresh server owns it permanently, with no password path back in.
@@ -72,8 +93,13 @@ real filter chain, reading the code out of the log — the only channel it has.
 
 **Tokens are opaque, not JWTs.** `TokenService` mints 32 bytes from
 `SecureRandom` and persists only the SHA-256 hash, in `Session`. 30-minute
-access token, 365-day refresh token that **rotates on every use**, revocable per
-device. Above `max-sessions-per-user` an employee's least-recently-used sessions
+access token, 30-day refresh token that **rotates on every use**, revocable per
+device. The 30 days is an **idle** limit (TODO-116, was 365): each refresh slides
+it forward, so a phone in daily use never re-enrols while one left in a drawer
+for a month stops being a credential on its own. Rotation runs under a row lock
+(`SessionRepository.findForUpdateByRefreshTokenHash`), so two refreshes racing
+with the same token cannot both succeed — the second finds it already rotated
+and trips reuse detection, which is the point when one of them is a thief. Above `max-sessions-per-user` an employee's least-recently-used sessions
 are revoked when a new one is issued, and unusable sessions are pruned nightly.
 Every lifetime, the session cap and the enrollment rate limit are
 `ecotrack.security.*` / `ecotrack.enrollment.*` properties in
@@ -170,14 +196,18 @@ Two companion knobs sit next to it, both **independent of `enforce`**:
   TODO-33 that is checked, not merely stated: mobile's ENTIRE API surface is
   declared in `.github/scripts/cross_project_invariants.py` and a new call
   fails repo-hygiene until it is added there); other
-  `/api/**` writes need `SALES`/`TECH`/`ADMIN`; `/api/**` reads need any
-  authenticated employee; everything else is `denyAll()`.
+  `/api/**` writes need `SALES`/`TECH`/`ADMIN`; `GET /api/tasks/**` and
+  `GET /api/routes/employee/**` need any authenticated employee and are
+  row-scoped in their controllers; **every other `/api/**` read needs an office
+  role** (TODO-116) — it used to need only a token, so a driver's phone could
+  read every client's CNP, phone and e-mail. Everything else is `denyAll()`.
   Authentication alone is not authorization: before this matrix existed, any
   valid token was effectively an admin token.
 
 `SecurityTests/` covers both modes: `AuthEnforcementOnTest`,
 `AuthEnforcementOffTest`, `AuthorizationMatrixTest`, `TaskScopingTest`,
-`EnrollmentFlowTest`, `EnrollmentBootstrapCodeTest`. The `auth-security` skill
+`EnrollmentFlowTest`, `EnrollmentBootstrapCodeTest`, `AuthHardeningTest` (read
+scope, approval code, re-enrolment) and `EnrollmentIpRateLimitTest`. The `auth-security` skill
 walks the whole surface; `api-endpoint` covers adding a route to it.
 
 ### Row-level task access is a separate layer

@@ -95,7 +95,9 @@ class AuthEnforcementOnTest {
     void validAccessToken_grantsAccessToBusinessEndpoint() throws Exception {
         String token = tokenFor("enforce_on_driver");
 
-        mockMvc.perform(get("/api/employees").header("Authorization", "Bearer " + token))
+        // A DRIVER token: /api/tasks/mine is the driver's own read. Office data
+        // (/api/employees, /api/clients) is refused to drivers since TODO-116.
+        mockMvc.perform(get("/api/tasks/mine").header("Authorization", "Bearer " + token))
                 .andExpect(status().isOk());
     }
 

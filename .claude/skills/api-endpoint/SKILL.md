@@ -48,7 +48,8 @@ in order:
 | `PATCH /api/tasks/*/status` | `DRIVER`, `SALES`, `TECH`, `ADMIN` |
 | `POST /api/tasks/*/photos` | `DRIVER`, `SALES`, `TECH`, `ADMIN` |
 | `POST/PUT/PATCH/DELETE /api/**` | `OFFICE` |
-| `/api/**` (anything left — the reads) | authenticated |
+| `GET /api/tasks/**`, `GET /api/routes/employee/**` | authenticated — the driver app's reads, row-scoped by `TaskAccessPolicy` in the controller |
+| `/api/**` (anything left — the reads) | `OFFICE` (TODO-116; was authenticated, which let a driver read every client's CNP) |
 | `/error` | permitted |
 | everything else | `denyAll()` |
 
@@ -59,7 +60,10 @@ catch-all is dead code that reads as if it works.
 So:
 
 - A write that office staff perform → **nothing to add**, the catch-all covers it.
-- A read for any authenticated employee → **nothing to add**.
+- A read for office staff → **nothing to add**; reads default to `OFFICE`.
+- A read the **driver app** needs outside `/api/tasks/**` and
+  `/api/routes/employee/**` → its own `GET` row above the office default,
+  **and** a `TaskAccessPolicy` call so a driver gets only their own rows.
 - A write the **driver app** performs → needs its own row, placed **above** the
   catch-alls. There are currently exactly two. A third is a real decision:
   the driver app's write surface is deliberately small.

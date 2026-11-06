@@ -27,11 +27,11 @@ unless its status says otherwise.
 **Status legend:** `[ ]` not started · `[~]` in progress · `[DONE]` done ·
 `[POSTPONED]` deliberately deferred · `[?]` needs a decision first
 
-**Next free ID: TODO-116.** (Highest used is TODO-115.)
+**Next free ID: TODO-120.** (Highest used is TODO-119.)
 
 ---
 
-## Still open — 8 of 114
+## Still open — 11 of 118
 
 The whole of what is left, in one place. Everything not listed here is `[DONE]`.
 
@@ -43,6 +43,9 @@ The whole of what is left, in one place. Everything not listed here is `[DONE]`.
 - **TODO-113** `[ ]` — CI never runs a migration against Postgres *(G)*
 - **TODO-114** `[ ]` — The web bundle has 2 kB of headroom left *(J)*
 - **TODO-115** `[ ]` — DEPLOYMENT.md and `ci-infra.yml` still describe a Terraform apply in CI *(G)*
+- **TODO-117** `[ ]` — Mobile keeps both tokens in unencrypted AsyncStorage *(H)*
+- **TODO-118** `[ ]` — The web refresh token is readable by any script on the page *(A)*
+- **TODO-119** `[ ]` — Two TODO-116 settings can only be checked against the real deployment *(G)*
 
 **Done, but flagged by whoever did it** — not open, but not finished-and-forgotten
 either:
@@ -172,6 +175,10 @@ full text lives further down.
 | TODO-113 | `[ ]` | G | CI never runs a migration against Postgres |
 | TODO-114 | `[ ]` | J | The web bundle has 2 kB of headroom left |
 | TODO-115 | `[ ]` | G | DEPLOYMENT.md and `ci-infra.yml` still describe a Terraform apply in CI |
+| TODO-116 | `[DONE]` | A | Auth hardening pass: read scope, approval code, re-enrolment, IP limit |
+| TODO-117 | `[ ]` | H | Mobile keeps both tokens in unencrypted AsyncStorage |
+| TODO-118 | `[ ]` | A | The web refresh token is readable by any script on the page |
+| TODO-119 | `[ ]` | G | Two TODO-116 settings can only be checked against the real deployment |
 
 ---
 
@@ -847,6 +854,48 @@ three copies of it; that mattered because the obvious version of this fix
 (checking `hasRole('DRIVER')`) is wrong — an admin satisfies that gate too.
 `routes/__tests__/homeDestination.test.tsx` pins all five shapes of account,
 including the ADMIN case that made the first draft of this item wrong.
+
+### TODO-116 `[DONE]` Auth hardening pass: read scope, approval code, re-enrolment, IP limit
+An audit of the whole auth layer found the core sound (opaque hashed tokens,
+rotation, reuse detection, per-device revocation) and the edges weak. Fixed:
+
+- **Drivers could read all office data.** `/api/**` reads needed only a token,
+  so a driver's phone could GET every client's CNP, phone and e-mail, every
+  order and every employee. Reads now default to office roles; drivers keep
+  `GET /api/tasks/**` and `GET /api/routes/employee/**`, and the route reads are
+  now row-scoped by `TaskAccessPolicy` (a driver could read any driver's routes).
+- **Approval checked only the name.** The six-digit code was shown to the admin
+  next to Aprobă, so checking it was optional. It is no longer in the admin
+  list; the admin types what the person reads out, and a mismatch is a 400.
+- **Every approval minted a new Employee.** A new phone, a revoked device, or
+  the re-enrolment a role change forces produced a duplicate person with none
+  of their routes. Approval can now name an existing `employeeId`.
+- **No per-IP limit on `/api/enrollment/request`.** The per-device limit counts
+  a client-chosen id. Added `max-requests-per-ip-per-hour`, reading the address
+  through `forwarded-for-hops` (see TODO-119). In memory, per instance.
+- **Refresh rotation could race.** Two refreshes with one token could both
+  succeed, hiding a theft. Rotation now takes a row lock.
+- **`SecurityConfig` failed open.** Its `@Value` fallback for `enforce` was
+  `false`; it is `true`.
+- **Refresh idle limit 365 → 30 days**, the owner's choice.
+- **No security headers on the SPA.** `web/vercel.json` now sets a CSP (inline
+  theme script allowed by hash, pinned by `securityHeaders.test.ts`), HSTS,
+  `X-Frame-Options`, `nosniff`, Referrer- and Permissions-Policy.
+
+Deliberately NOT done: a global cap on pending requests (it would hand an
+attacker a lever to block real enrolments; the per-IP limit covers the spam).
+Follow-ups: TODO-117, TODO-118, TODO-119.
+
+### TODO-118 `[ ]` The web refresh token is readable by any script on the page
+`web/src/auth/storage.ts` keeps the refresh token in `localStorage`, so one XSS
+bug hands an attacker a credential that renews itself for as long as they keep
+using it. TODO-116's CSP makes that bug much harder to exploit, but the token is
+still script-readable. The fix is an `httpOnly; Secure; SameSite` cookie set by
+`/api/auth/refresh` - **not done** because the SPA (Vercel) and the API (Cloud
+Run) are different sites, so the cookie would be third-party and Safari drops
+those. Deciding it needs both on one registrable domain (e.g. `app.` and `api.`
+under one custom domain, `var.web_custom_domains` plus a Cloud Run domain
+mapping), then a cookie path in `AuthController` and `AuthProvider`.
 
 ---
 
@@ -4085,6 +4134,23 @@ all, now that the laptop is the only thing that applies. It should, on the
 plaintext-secrets argument alone, but written as "your state file is a
 credential" rather than "CI will fail without it".
 
+### TODO-119 `[ ]` Two TODO-116 settings can only be checked against the real deployment
+Nothing has been deployed (no GCP project yet), so two things TODO-116 shipped
+are verified locally only:
+
+- **`ecotrack.security.forwarded-for-hops=1` in prod.** It assumes Cloud Run's
+  front end APPENDS the client address to X-Forwarded-For, making the rightmost
+  entry trustworthy. If that is wrong, every enrolment request counts against
+  one shared bucket (20 an hour for everyone) or a spoofable one. Check: after
+  the first deploy, file two requests from two networks and confirm the backend
+  logs keep them apart.
+- **The CSP's `connect-src` allows `https://*.run.app`**, any Cloud Run service,
+  because the API URL is not known when `vercel.json` is committed. It should be
+  the one service URL, which `build-web.yml` already reads from Cloud Run.
+  The map was also not exercised under the CSP (the sandbox could not reach
+  `tiles.openfreemap.org`); open `/harta` once on the deployed site and check
+  the console for CSP violations.
+
 ---
 
 ## H. Mobile
@@ -4511,6 +4577,16 @@ manifest attribute, so no OTA can carry it. It is therefore step 5 of
 `DEPLOYMENT.md`'s mobile cutover rather than something that ships with the
 update, and that step now says so. Nothing is broken meanwhile: an installed
 binary keeps a permission it does not exercise.
+
+### TODO-117 `[ ]` Mobile keeps both tokens in unencrypted AsyncStorage
+`mobile/services/tokenStore.ts` stores the access and refresh token in
+AsyncStorage: app-private, but plaintext on disk, and included in Android
+backups unless excluded. Found in the TODO-116 audit and **not done there**
+because the fix, `expo-secure-store` (Keychain / Keystore), is a native module:
+it needs an `eas build` and a store release, not an OTA, and installs already in
+the field must migrate the pair on first launch. Deciding it needs a native
+release to be planned anyway (`DEPLOYMENT.md`'s mobile cutover already lists
+native-only changes waiting for one).
 
 ---
 

@@ -169,9 +169,9 @@ class AdminSessionRevocationTest {
                 .andExpect(status().isNoContent());
 
         // The point of the whole item: the phone in the wrong hands stops working.
-        mockMvc.perform(get("/api/employees").header("Authorization", "Bearer " + lost.accessToken()))
+        mockMvc.perform(get("/api/tasks/mine").header("Authorization", "Bearer " + lost.accessToken()))
                 .andExpect(status().isUnauthorized());
-        mockMvc.perform(get("/api/employees").header("Authorization", "Bearer " + kept.accessToken()))
+        mockMvc.perform(get("/api/tasks/mine").header("Authorization", "Bearer " + kept.accessToken()))
                 .andExpect(status().isOk());
     }
 
@@ -185,7 +185,7 @@ class AdminSessionRevocationTest {
                         .header("Authorization", "Bearer " + adminToken))
                 .andExpect(status().isNotFound());
 
-        mockMvc.perform(get("/api/employees")
+        mockMvc.perform(get("/api/tasks/mine")
                         .header("Authorization", "Bearer " + driversSession.accessToken()))
                 .andExpect(status().isOk());
     }
@@ -202,7 +202,7 @@ class AdminSessionRevocationTest {
 
         assertThat(objectMapper.readTree(body).get("revoked").asInt()).isEqualTo(2);
         for (String token : List.of(first.accessToken(), second.accessToken())) {
-            mockMvc.perform(get("/api/employees").header("Authorization", "Bearer " + token))
+            mockMvc.perform(get("/api/tasks/mine").header("Authorization", "Bearer " + token))
                     .andExpect(status().isUnauthorized());
         }
     }
@@ -223,10 +223,10 @@ class AdminSessionRevocationTest {
                 .andReturn().getResponse().getContentAsString();
 
         assertThat(objectMapper.readTree(body).get("revoked").asInt()).isEqualTo(1);
-        mockMvc.perform(get("/api/employees").header("Authorization", "Bearer " + otherLaptop.accessToken()))
+        mockMvc.perform(get("/api/tasks/mine").header("Authorization", "Bearer " + otherLaptop.accessToken()))
                 .andExpect(status().isUnauthorized());
         // Still signed in.
-        mockMvc.perform(get("/api/employees").header("Authorization", "Bearer " + adminToken))
+        mockMvc.perform(get("/api/tasks/mine").header("Authorization", "Bearer " + adminToken))
                 .andExpect(status().isOk());
     }
 

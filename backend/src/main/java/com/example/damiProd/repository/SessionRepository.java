@@ -1,7 +1,9 @@
 package com.example.damiProd.repository;
 
 import com.example.damiProd.domain.Session;
+import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
@@ -14,6 +16,18 @@ import java.util.Optional;
 public interface SessionRepository extends JpaRepository<Session, Long> {
 
     Optional<Session> findByRefreshTokenHash(String refreshTokenHash);
+
+    /**
+     * The same lookup under a row lock, for rotation (TODO-116). Rotation is a
+     * check-then-write on one row: without the lock, two refreshes presenting
+     * the same token both read it as current and both get a fresh pair, so a
+     * stolen token used at the same moment as the real one is never caught as
+     * reuse. With it, the second waits, finds the hash already rotated, and
+     * falls through to the reuse check, which revokes the session.
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select s from Session s where s.refreshTokenHash = :hash")
+    Optional<Session> findForUpdateByRefreshTokenHash(@Param("hash") String refreshTokenHash);
 
     /**
      * Finds the still-live session that has already rotated away from this

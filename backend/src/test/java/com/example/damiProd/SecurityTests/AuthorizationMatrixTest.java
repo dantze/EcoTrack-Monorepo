@@ -211,11 +211,19 @@ class AuthorizationMatrixTest {
     // ---------------------------------------------------------------------
 
     @Test
-    void everyAuthenticatedRole_mayRead() throws Exception {
-        for (String token : new String[] { driverToken, salesToken, adminToken }) {
+    void officeRoles_mayRead() throws Exception {
+        for (String token : new String[] { salesToken, adminToken }) {
             mockMvc.perform(get("/api/employees").header("Authorization", "Bearer " + token))
                     .andExpect(status().isOk());
         }
+    }
+
+    @Test
+    void driver_cannotReadOfficeData() throws Exception {
+        // Reads used to be open to any authenticated role (TODO-116); the full
+        // driver read surface is in AuthHardeningTest.
+        mockMvc.perform(get("/api/employees").header("Authorization", "Bearer " + driverToken))
+                .andExpect(status().isForbidden());
     }
 
     @Test

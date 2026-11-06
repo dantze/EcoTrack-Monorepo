@@ -40,7 +40,8 @@ public class AdminEnrollmentController {
             @RequestBody ApproveRequestBody body) {
         Long adminId = principal != null && principal.getEmployee() != null
                 ? principal.getEmployee().getId() : null;
-        return respond(enrollmentService.approve(id, body.getRoleName(), adminId));
+        return respond(enrollmentService.approve(id, body.getRoleName(), body.getVerificationCode(),
+                body.getEmployeeId(), adminId));
     }
 
     @PostMapping("/requests/{id}/reject")
@@ -58,6 +59,10 @@ public class AdminEnrollmentController {
             case NOT_PENDING -> ResponseEntity.status(409).body(Map.of("message", "Cererea a fost deja procesată"));
             case EXPIRED -> ResponseEntity.status(410).body(Map.of("message", "Cererea a expirat"));
             case BAD_ROLE -> ResponseEntity.badRequest().body(Map.of("message", "Rol invalid"));
+            case BAD_CODE -> ResponseEntity.badRequest().body(Map.of("message",
+                    "Codul nu corespunde. Cere-i persoanei codul afișat pe ecranul ei."));
+            case EMPLOYEE_NOT_FOUND -> ResponseEntity.status(404)
+                    .body(Map.of("message", "Angajatul nu a fost găsit"));
         };
     }
 }

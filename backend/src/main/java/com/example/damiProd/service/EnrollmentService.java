@@ -23,12 +23,17 @@ import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayDeque;
 import java.util.Base64;
+import java.util.Comparator;
+import java.util.Deque;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Device enrollment: the only way anyone gets into this system.
@@ -103,6 +108,9 @@ public class EnrollmentService {
     @Value("${ecotrack.enrollment.max-requests-per-device-per-hour:5}")
     private int maxRequestsPerDevicePerHour;
 
+    @Value("${ecotrack.enrollment.max-requests-per-ip-per-hour:20}")
+    private int maxRequestsPerIpPerHour;
+
     @Value("${ecotrack.enrollment.allow-admin-recovery:true}")
     private boolean allowAdminRecovery;
 
@@ -120,6 +128,16 @@ public class EnrollmentService {
      * The first-run code. Held in memory only and never persisted: a restart
      * before anyone enrolls mints a new one, which is the safe direction.
      */
+    /**
+     * Recent request times per client address (TODO-116). The per-device limit
+     * counts an id the client invents, so it never stopped a caller who sends a
+     * fresh one each time. Held in memory, per instance: an instance that scales
+     * away forgets, and N instances allow N times the limit - acceptable for a
+     * brake on queue spam, which is all this is.
+     */
+    private final Map<String, Deque<Instant>> recentRequestsByIp = new ConcurrentHashMap<>();
+    private static final int MAX_TRACKED_IPS = 10_000;
+
     private volatile String setupCode;
 
     /**
@@ -316,6 +334,12 @@ public class EnrollmentService {
 
     @Transactional
     public RequestResult request(String fullName, String deviceId, String deviceLabel, String providedSetupCode) {
+        return request(fullName, deviceId, deviceLabel, providedSetupCode, null);
+    }
+
+    @Transactional
+    public RequestResult request(String fullName, String deviceId, String deviceLabel, String providedSetupCode,
+            String clientIp) {
         String name = trimToNull(fullName);
         String device = trimToNull(deviceId);
         if (name == null || name.length() > MAX_NAME_LENGTH
@@ -328,6 +352,10 @@ public class EnrollmentService {
         long recent = accessRequestRepository.countByDeviceIdAndCreatedAtAfter(
                 device, Instant.now().minus(1, ChronoUnit.HOURS));
         if (recent >= maxRequestsPerDevicePerHour) {
+            return RequestResult.fail(RequestOutcome.RATE_LIMITED);
+        }
+        if (clientIp != null && ipOverLimit(clientIp, Instant.now())) {
+            log.warn("Enrollment request refused: per-address limit reached");
             return RequestResult.fail(RequestOutcome.RATE_LIMITED);
         }
 
@@ -500,12 +528,26 @@ public class EnrollmentService {
                 .toList();
     }
 
-    public enum DecisionOutcome { OK, NOT_FOUND, NOT_PENDING, EXPIRED, BAD_ROLE }
+    public enum DecisionOutcome { OK, NOT_FOUND, NOT_PENDING, EXPIRED, BAD_ROLE, BAD_CODE, EMPLOYEE_NOT_FOUND }
 
+    /**
+     * Approves a pending request (TODO-116 added the last two arguments).
+     *
+     * @param verificationCode what the requester reads out. It is no longer in
+     *     the admin's list, so approving proves the admin heard it from the
+     *     person holding the device - the only thing that stops a request made
+     *     in somebody else's name from being approved on the name alone.
+     * @param existingEmployeeId set to re-enrol a person who already exists (a
+     *     new phone, a revoked device, a role change that revoked every
+     *     session): the device signs in as THAT employee, with their roles,
+     *     routes and history, and {@code roleName} is ignored. Null mints a new
+     *     employee with {@code roleName}, as before.
+     */
     @Transactional
-    public DecisionOutcome approve(Long requestId, String roleName, Long adminEmployeeId) {
+    public DecisionOutcome approve(Long requestId, String roleName, String verificationCode,
+            Long existingEmployeeId, Long adminEmployeeId) {
         String role = roleName == null ? null : roleName.trim().toUpperCase(Locale.ROOT);
-        if (role == null || !ASSIGNABLE_ROLES.contains(role)) {
+        if (existingEmployeeId == null && (role == null || !ASSIGNABLE_ROLES.contains(role))) {
             return DecisionOutcome.BAD_ROLE;
         }
         Optional<AccessRequest> found = accessRequestRepository.findById(requestId);
@@ -521,6 +563,21 @@ public class EnrollmentService {
             request.setStatus(AccessRequestStatus.EXPIRED);
             accessRequestRepository.save(request);
             return DecisionOutcome.EXPIRED;
+        }
+        if (!verificationCodeMatches(request.getVerificationCode(), verificationCode)) {
+            log.warn("Access request {}: approval refused, verification code does not match", requestId);
+            return DecisionOutcome.BAD_CODE;
+        }
+        if (existingEmployeeId != null) {
+            Optional<Employee> existing = employeeRepository.findById(existingEmployeeId);
+            if (existing.isEmpty()) {
+                return DecisionOutcome.EMPLOYEE_NOT_FOUND;
+            }
+            link(request, existing.get(), adminEmployeeId, now);
+            accessRequestRepository.save(request);
+            log.info("Access request {} approved as existing employee {} by employee {}",
+                    requestId, existingEmployeeId, adminEmployeeId);
+            return DecisionOutcome.OK;
         }
         grant(request, role, adminEmployeeId, now);
         accessRequestRepository.save(request);
@@ -579,6 +636,62 @@ public class EnrollmentService {
      * and for uniqueness - it is no longer a credential, because nothing logs in
      * with it any more.
      */
+    /**
+     * Approves a request as an employee who already exists. No row is created
+     * and no role changes: {@code createdEmployeeId} names whom the claim signs
+     * in as. {@code assignedRoleName} is display and lockout bookkeeping only -
+     * {@link #isAdminLockedOut()} counts approved-but-unclaimed ADMIN requests,
+     * so an admin re-enrolling must still read as one.
+     */
+    private void link(AccessRequest request, Employee employee, Long adminEmployeeId, Instant now) {
+        String displayRole = employee.getRoles().stream()
+                .map(EmployeeRole::getRoleName)
+                .min(Comparator.comparing(name -> ADMIN_ROLE.equals(name) ? "" : name))
+                .orElse(null);
+        request.setStatus(AccessRequestStatus.APPROVED);
+        request.setAssignedRoleName(displayRole);
+        request.setDecidedAt(now);
+        request.setDecidedByEmployeeId(adminEmployeeId);
+        request.setCreatedEmployeeId(employee.getId());
+        request.setExpiresAt(now.plus(claimTtlMinutes, ChronoUnit.MINUTES));
+    }
+
+    private static boolean verificationCodeMatches(String expected, String provided) {
+        String given = trimToNull(provided);
+        if (expected == null || given == null) {
+            return false;
+        }
+        return MessageDigest.isEqual(
+                expected.getBytes(StandardCharsets.UTF_8), given.getBytes(StandardCharsets.UTF_8));
+    }
+
+    /** Sliding one-hour window per address; records the attempt when under the limit. */
+    private boolean ipOverLimit(String clientIp, Instant now) {
+        if (maxRequestsPerIpPerHour <= 0) {
+            return false;
+        }
+        Instant cutoff = now.minus(1, ChronoUnit.HOURS);
+        if (recentRequestsByIp.size() > MAX_TRACKED_IPS) {
+            recentRequestsByIp.entrySet().removeIf(e -> {
+                synchronized (e.getValue()) {
+                    Instant last = e.getValue().peekLast();
+                    return last == null || last.isBefore(cutoff);
+                }
+            });
+        }
+        Deque<Instant> times = recentRequestsByIp.computeIfAbsent(clientIp, ip -> new ArrayDeque<>());
+        synchronized (times) {
+            while (!times.isEmpty() && times.peekFirst().isBefore(cutoff)) {
+                times.pollFirst();
+            }
+            if (times.size() >= maxRequestsPerIpPerHour) {
+                return true;
+            }
+            times.addLast(now);
+            return false;
+        }
+    }
+
     private String uniqueUsername(String fullName) {
         String base = fullName.toLowerCase(Locale.ROOT)
                 .replaceAll("[ăâ]", "a").replace('î', 'i').replace('ș', 's').replace('ț', 't')

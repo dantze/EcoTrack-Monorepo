@@ -8,7 +8,6 @@ import java.time.Instant;
 public record AccessRequestResponse(
         Long id,
         String fullName,
-        String verificationCode,
         String deviceLabel,
         String status,
         Instant createdAt,
@@ -19,7 +18,6 @@ public record AccessRequestResponse(
         return new AccessRequestResponse(
                 request.getId(),
                 request.getFullName(),
-                request.getVerificationCode(),
                 request.getDeviceLabel(),
                 request.getStatus().name(),
                 request.getCreatedAt(),

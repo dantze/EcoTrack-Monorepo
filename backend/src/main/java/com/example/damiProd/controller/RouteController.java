@@ -1,5 +1,9 @@
 package com.example.damiProd.controller;
 
+import com.example.damiProd.config.EmployeePrincipal;
+import com.example.damiProd.service.TaskAccessPolicy;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+
 import com.example.damiProd.domain.Route;
 import com.example.damiProd.dto.CreateRouteRequest;
 import com.example.damiProd.service.RouteService;
@@ -13,9 +17,11 @@ import java.util.List;
 public class RouteController {
 
     private final RouteService routeService;
+    private final TaskAccessPolicy accessPolicy;
 
-    public RouteController(RouteService routeService) {
+    public RouteController(RouteService routeService, TaskAccessPolicy accessPolicy) {
         this.routeService = routeService;
+        this.accessPolicy = accessPolicy;
     }
 
     @GetMapping
@@ -44,7 +50,11 @@ public class RouteController {
 
     // Get all routes for a specific employee (driver)
     @GetMapping("/employee/{employeeId}")
-    public ResponseEntity<List<Route>> getRoutesByEmployee(@PathVariable Long employeeId) {
+    public ResponseEntity<List<Route>> getRoutesByEmployee(
+            @AuthenticationPrincipal EmployeePrincipal principal,
+            @PathVariable Long employeeId) {
+        // The driver app's one route read: a driver may ask only for their own.
+        accessPolicy.requireCanReadTasksOf(principal, employeeId);
         List<Route> routes = routeService.getRoutesByEmployeeId(employeeId);
         return ResponseEntity.ok(routes);
     }
@@ -53,8 +63,10 @@ public class RouteController {
     // Weekday rather than date: a route recurs weekly, it is not scheduled per day.
     @GetMapping("/employee/{employeeId}/day/{dayOfWeek}")
     public ResponseEntity<List<Route>> getRoutesByEmployeeAndDay(
+            @AuthenticationPrincipal EmployeePrincipal principal,
             @PathVariable Long employeeId,
             @PathVariable Integer dayOfWeek) {
+        accessPolicy.requireCanReadTasksOf(principal, employeeId);
         List<Route> routes = routeService.getRoutesByEmployeeIdAndDayOfWeek(employeeId, dayOfWeek);
         return ResponseEntity.ok(routes);
     }

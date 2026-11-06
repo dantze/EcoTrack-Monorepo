@@ -7,6 +7,7 @@ import com.example.damiProd.service.RouteService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import com.example.damiProd.service.TaskAccessPolicy;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
@@ -31,6 +32,11 @@ class RouteControllerTest {
 
     @MockitoBean
     private RouteService routeService;
+
+    // Its void guards no-op as a mock; who may read whose routes is asserted in
+    // SecurityTests/AuthHardeningTest against the real chain.
+    @MockitoBean
+    private TaskAccessPolicy accessPolicy;
 
     // -----------------------------------------------------------------------
     // Helper

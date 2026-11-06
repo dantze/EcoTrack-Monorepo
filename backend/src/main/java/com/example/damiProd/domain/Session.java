@@ -42,7 +42,7 @@ public class Session {
      *
      * Presenting any of these is proof that two parties hold tokens from this
      * family, so the session is revoked on sight. The cap keeps the row bounded
-     * on a session that refreshes every 30 minutes for 365 days; a token older
+     * on a session that refreshes every 30 minutes for a year; a token older
      * than the window is already unusable, it just stops being *attributable*.
      *
      * EAGER because the reuse check runs on the /auth/refresh path outside any

@@ -1,5 +1,7 @@
 package com.example.damiProd.controller;
 
+import org.springframework.beans.factory.annotation.Value;
+
 import com.example.damiProd.dto.EmployeeResponse;
 import com.example.damiProd.dto.EnrollmentClaimBody;
 import com.example.damiProd.dto.EnrollmentRequestBody;
@@ -26,6 +28,15 @@ import java.util.Map;
 public class EnrollmentController {
 
     private final EnrollmentService enrollmentService;
+
+    /**
+     * How many proxies in front of us APPEND to X-Forwarded-For (TODO-116).
+     * The client address is the entry that many places from the right; every
+     * entry left of it was written by the caller and is ignored. 0 = no proxy,
+     * use the socket address. Cloud Run is 1.
+     */
+    @Value("${ecotrack.security.forwarded-for-hops:0}")
+    private int forwardedForHops;
 
     public EnrollmentController(EnrollmentService enrollmentService) {
         this.enrollmentService = enrollmentService;
@@ -58,7 +69,8 @@ public class EnrollmentController {
         EnrollmentService.RequestResult result = enrollmentService.request(
                 body.getFullName(), body.getDeviceId(),
                 body.getDeviceLabel() != null ? body.getDeviceLabel() : httpRequest.getHeader("User-Agent"),
-                body.getSetupCode());
+                body.getSetupCode(),
+                clientIp(httpRequest));
 
         return switch (result.outcome()) {
             case CREATED -> {
@@ -84,6 +96,16 @@ public class EnrollmentController {
      * Polled by the waiting screen. 202 means "keep waiting" - deliberately not
      * an error, so the client can poll without treating it as a failure.
      */
+    String clientIp(HttpServletRequest request) {
+        String header = request.getHeader("X-Forwarded-For");
+        if (forwardedForHops <= 0 || header == null || header.isBlank()) {
+            return request.getRemoteAddr();
+        }
+        String[] entries = header.split(",");
+        int index = entries.length - forwardedForHops;
+        return index >= 0 ? entries[index].trim() : request.getRemoteAddr();
+    }
+
     @PostMapping("/claim")
     public ResponseEntity<?> claim(@RequestBody EnrollmentClaimBody body, HttpServletRequest httpRequest) {
         EnrollmentService.ClaimResult result = enrollmentService.claim(
