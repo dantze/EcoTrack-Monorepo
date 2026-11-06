@@ -17,7 +17,8 @@ Vercel and the rest — and is not something you need installed to work on the
 app.
 
 Deeper reading, in order of how often you will want it: **`CLAUDE.md`** is the
-reference for how the code works and why, **`DEPLOYMENT.md`** is the runbook,
+reference for how the code works and why (an index; the detail is in
+`docs/architecture/`), **`DEPLOYMENT.md`** is the runbook,
 and **`TODO.md`** is the backlog and the project's memory.
 
 ## Prerequisites
